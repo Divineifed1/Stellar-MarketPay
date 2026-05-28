@@ -6,6 +6,7 @@ import {
   Address,
   nativeToScVal,
   xdr,
+  Horizon,
 } from "@stellar/stellar-sdk";
 import * as SorobanRpc from "@stellar/stellar-sdk/rpc";
 
@@ -17,6 +18,8 @@ const NETWORK_PASSPHRASE = Networks.TESTNET;
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID ?? "";
+
+export const server = new Horizon.Server(HORIZON_URL, { allowHttp: false });
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +39,26 @@ export interface EscrowResult {
   txHash: string;
 }
 
+export interface MarketPayTransaction {
+  id: string;
+  hash: string;
+  ledger: number;
+  created_at: string;
+  from: string;
+  to: string;
+  amount: string;
+  asset: string;
+  memo?: string;
+  memo_type?: string;
+  successful: boolean;
+  marketPayType?: "escrow" | "payment" | "refund" | "other";
+}
+
+export interface FetchTransactionsResponse {
+  transactions: MarketPayTransaction[];
+  hasMore: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Freighter helpers (browser-only)
 // ---------------------------------------------------------------------------
@@ -46,14 +69,13 @@ async function getFreighter() {
   }
   // Freighter injects window.freighter; fall back to @stellar/freighter-api
   // when the extension is installed it patches the global.
-  const { isConnected, getPublicKey, signTransaction } = await import(
-    "@stellar/freighter-api"
-  );
+  const { isConnected, getPublicKey, signTransaction } =
+    await import("@stellar/freighter-api");
 
   const connected = await isConnected();
   if (!connected) {
     throw new Error(
-      "Freighter wallet not found. Please install the Freighter extension."
+      "Freighter wallet not found. Please install the Freighter extension.",
     );
   }
   return { getPublicKey, signTransaction };
@@ -71,13 +93,13 @@ async function getFreighter() {
  * The returned XDR is ready to be signed by Freighter and submitted.
  */
 export async function buildCreateEscrowTx(
-  params: EscrowParams
+  params: EscrowParams,
 ): Promise<string> {
   const { clientPublicKey, jobId, budgetXlm } = params;
 
   if (!CONTRACT_ID) {
     throw new Error(
-      "NEXT_PUBLIC_CONTRACT_ID is not set. Add it to your .env.local file."
+      "NEXT_PUBLIC_CONTRACT_ID is not set. Add it to your .env.local file.",
     );
   }
 
@@ -111,9 +133,7 @@ export async function buildCreateEscrowTx(
   const simResponse = await server.simulateTransaction(tx);
 
   if (SorobanRpc.Api.isSimulationError(simResponse)) {
-    throw new Error(
-      `Soroban simulation failed: ${simResponse.error}`
-    );
+    throw new Error(`Soroban simulation failed: ${simResponse.error}`);
   }
 
   // Assemble the transaction (adds footprint, resource fees, etc.)
@@ -133,7 +153,7 @@ export async function buildCreateEscrowTx(
  * Returns the confirmed transaction hash.
  */
 export async function signAndSubmitEscrowTx(
-  preparedXdr: string
+  preparedXdr: string,
 ): Promise<EscrowResult> {
   const { signTransaction } = await getFreighter();
 
@@ -153,7 +173,7 @@ export async function signAndSubmitEscrowTx(
     (() => {
       const { Transaction } = require("@stellar/stellar-sdk");
       return new Transaction(signedTransaction, NETWORK_PASSPHRASE);
-    })()
+    })(),
   );
 
   if (sendResponse.status === "ERROR") {
@@ -179,7 +199,7 @@ export async function signAndSubmitEscrowTx(
 
   if (getResponse.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
     throw new Error(
-      `Transaction did not succeed. Status: ${getResponse.status}`
+      `Transaction did not succeed. Status: ${getResponse.status}`,
     );
   }
 
@@ -191,8 +211,113 @@ export async function signAndSubmitEscrowTx(
 // ---------------------------------------------------------------------------
 
 export async function createEscrowOnChain(
-  params: EscrowParams
+  params: EscrowParams,
 ): Promise<EscrowResult> {
   const preparedXdr = await buildCreateEscrowTx(params);
   return signAndSubmitEscrowTx(preparedXdr);
+}
+
+// ---------------------------------------------------------------------------
+// Transaction History & Explorer URLs
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a Stellar Expert URL for viewing a transaction
+ */
+export function explorerUrl(txHash: string): string {
+  return `https://stellar.expert/explorer/testnet/tx/${txHash}`;
+}
+
+/**
+ * Generate a Stellar Expert URL for viewing an account
+ */
+export function accountUrl(publicKey: string): string {
+  return `https://stellar.expert/explorer/testnet/account/${publicKey}`;
+}
+
+/**
+ * Fetch MarketPay transactions for a given account
+ * Includes payments, escrow operations, and contract interactions
+ */
+export async function fetchMarketPayTransactions(
+  publicKey: string,
+  limit: number = 20,
+  cursor?: string,
+): Promise<FetchTransactionsResponse> {
+  try {
+    // Fetch transactions from Horizon API
+    let query = server
+      .transactions()
+      .forAccount(publicKey)
+      .limit(limit + 1) // Fetch one extra to determine if there are more
+      .order("desc");
+
+    if (cursor) {
+      query = query.cursor(cursor);
+    }
+
+    const response = await query.call();
+    const records = response.records || [];
+
+    // Check if there are more records
+    const hasMore = records.length > limit;
+    const transactions = records.slice(0, limit);
+
+    // Transform Horizon transactions to MarketPayTransaction format
+    const marketPayTransactions: MarketPayTransaction[] = transactions.map(
+      (tx: any) => {
+        // Extract payment operations
+        let from = "";
+        let to = "";
+        let amount = "0";
+        let asset = "XLM";
+        let marketPayType: "escrow" | "payment" | "refund" | "other" = "other";
+
+        // Look for payment operations
+        if (tx.operations && tx.operations.length > 0) {
+          const paymentOp = tx.operations.find(
+            (op: any) =>
+              op.type === "payment" ||
+              op.type === "path_payment_strict_receive",
+          );
+
+          if (paymentOp) {
+            from = paymentOp.from;
+            to = paymentOp.to;
+            amount = paymentOp.amount;
+            asset = paymentOp.asset_code || "XLM";
+            marketPayType = "payment";
+
+            // Detect escrow operations by memo or operation type
+            if (tx.memo && tx.memo.includes("escrow")) {
+              marketPayType = "escrow";
+            }
+          }
+        }
+
+        return {
+          id: tx.id,
+          hash: tx.hash,
+          ledger: tx.ledger_attr,
+          created_at: tx.created_at,
+          from,
+          to,
+          amount,
+          asset,
+          memo: tx.memo,
+          memo_type: tx.memo_type,
+          successful: tx.successful,
+          marketPayType,
+        };
+      },
+    );
+
+    return {
+      transactions: marketPayTransactions,
+      hasMore,
+    };
+  } catch (error) {
+    console.error("Error fetching transactions:", error);
+    throw new Error("Failed to fetch transaction history");
+  }
 }
