@@ -203,3 +203,18 @@ export interface TimeInvoice {
   createdAt: string;
   updatedAt: string;
 }
+
+// ─── Job Invitations (Issue #342) ─────────────────────────────────────────────
+
+export interface JobInvitation {
+  id: string;
+  jobId: string;
+  jobTitle: string;
+  jobBudget: string;
+  jobCurrency: Currency;
+  clientAddress: string;
+  clientName?: string;
+  freelancerAddress: string;
+  status: "pending" | "accepted" | "declined";
+  createdAt: string;
+}

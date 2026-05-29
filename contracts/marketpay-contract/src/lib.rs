@@ -807,6 +807,59 @@ impl MarketPayContract {
         );
     }
 
+    // ─── Issue #344: Job Boost with XLM Payment ──────────────────────────────
+
+    /// Client pays XLM to the platform treasury to boost a job listing.
+    ///
+    /// Boost tiers (in stroops, 1 XLM = 10_000_000 stroops):
+    ///   ≥  5 XLM → 7-day boost
+    ///   ≥ 15 XLM → 30-day boost
+    ///
+    /// The payment is transferred directly to `treasury`.
+    /// Emits a `JobBoosted` event with job_id and boost_expiry_ledger.
+    pub fn boost_job(
+        env: Env,
+        job_id: String,
+        client: Address,
+        treasury: Address,
+        token: Address,
+        amount: i128,
+    ) {
+        client.require_auth();
+
+        if amount <= 0 {
+            panic!("Boost amount must be positive");
+        }
+
+        // Minimum boost is 5 XLM (50_000_000 stroops)
+        let min_boost_stroops: i128 = 50_000_000;
+        if amount < min_boost_stroops {
+            panic!("Minimum boost is 5 XLM");
+        }
+
+        // Transfer payment from client to treasury
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&client, &treasury, &amount);
+
+        // Calculate boost duration in ledgers (~5 s/ledger)
+        // 7 days  = 120_960 ledgers
+        // 30 days = 518_400 ledgers
+        let boost_ledgers: u32 = if amount >= 150_000_000 {
+            518_400 // 30 days
+        } else {
+            120_960 // 7 days
+        };
+
+        let boost_expiry = env.ledger().sequence()
+            .checked_add(boost_ledgers)
+            .expect("Boost expiry overflow");
+
+        env.events().publish(
+            (symbol_short!("boosted"), client),
+            (job_id, boost_expiry, amount),
+        );
+    }
+
     // ─── Issue #108: Sealed-Bid Budget Commitment ────────────────────────────
 
     /// Client commits to a budget amount (sealed-bid, prevents anchoring bias).

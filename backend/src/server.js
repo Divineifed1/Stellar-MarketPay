@@ -31,6 +31,7 @@ const webauthnRoutes  = require("./routes/webauthn");
 const disputeRoutes   = require("./routes/disputes");
 const adminRoutes     = require("./routes/admin");
 const timeEntryRoutes = require("./routes/timeEntries");
+const invitationRoutes = require("./routes/invitations");
 const pool            = require("./db/pool");
 const migrate         = require("./db/migrate");
 const IndexerService  = require("./services/indexerService");
@@ -200,6 +201,7 @@ app.use("/api/webauthn",      webauthnRoutes);
 app.use("/api/disputes",      disputeRoutes);
 app.use("/api/admin",         adminRoutes);
 app.use("/api/time-entries",  timeEntryRoutes);
+app.use("/api/invitations",   invitationRoutes);
 
 app.use((err, req, res, next) => {
   logError(req.logger || serviceLogger, err, {

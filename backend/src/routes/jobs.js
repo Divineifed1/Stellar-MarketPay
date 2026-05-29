@@ -258,6 +258,7 @@ router.post("/:id/view", generalJobRateLimiter, async (req, res, next) => {
 // POST /api/jobs/:id/invite — invite freelancer to invite-only job
 router.post("/:id/invite", verifyJWT, generalJobRateLimiter, async (req, res, next) => {
   try {
+    const { inviteFreelancerToJob } = require("../services/jobInvitationService");
     const invitation = await inviteFreelancerToJob({
       jobId: req.params.id,
       clientAddress: req.user.publicKey,
@@ -292,11 +293,17 @@ router.patch("/:id/escrow", verifyJWT, generalJobRateLimiter, async (req, res, n
 // PATCH /api/jobs/:id/boost — boost a job listing for 7 days
 router.patch("/:id/boost", verifyJWT, generalJobRateLimiter, async (req, res, next) => {
   try {
-    const { txHash } = req.body;
+    const { txHash, amountXlm } = req.body;
     if (!txHash || typeof txHash !== "string") {
       return res.status(400).json({ success: false, error: "Transaction hash is required" });
     }
-    const job = await boostJob(req.params.id, txHash);
+
+    // Determine boost duration from payment amount
+    // 5 XLM = 7 days, 15 XLM = 30 days
+    const amount = parseFloat(amountXlm) || 0;
+    const boostDays = amount >= 15 ? 30 : 7;
+
+    const job = await boostJob(req.params.id, txHash, boostDays);
     res.json({ success: true, data: job });
   } catch (e) { next(e); }
 });

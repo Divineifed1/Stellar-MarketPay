@@ -18,9 +18,12 @@ import {
   upsertPriceAlertPreference,
   fetchClientSpendingAnalytics,
   extendJobExpiry,
+  fetchMyInvitations,
+  declineInvitation,
+  acceptInvitation,
 } from "@/lib/api";
 import { formatXLM, shortenAddress, timeAgo, statusLabel, statusClass, copyToClipboard, exportJobsToCSV, exportApplicationsToCSV } from "@/utils/format";
-import type { Job, Application, ClientSpendingAnalytics } from "@/utils/types";
+import type { Job, Application, ClientSpendingAnalytics, JobInvitation } from "@/utils/types";
 import EditProfileForm from "@/components/EditProfileForm";
 import SendPaymentForm from "@/components/SendPaymentForm";
 import BuyXLMModal from "@/components/BuyXLMModal";
@@ -45,7 +48,7 @@ interface DashboardProps {
   onConnect: (pk: string) => void;
 }
 
-type Tab = "posted" | "applied" | "analytics" | "spending" | "send" | "edit_profile" | "templates" | "price_alerts" | "withdrawals";
+type Tab = "posted" | "applied" | "invitations" | "analytics" | "spending" | "send" | "edit_profile" | "templates" | "price_alerts" | "withdrawals";
 const REPOST_JOB_PREFILL_STORAGE_KEY = "marketpay_repost_job_prefill";
 
 async function fetchBalances(publicKey: string): Promise<{ xlm: string; usdc: string }> {
@@ -68,6 +71,8 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const [canViewSpending, setCanViewSpending] = useState(true);
   const [myJobs, setMyJobs] = useState<Job[]>([]);
   const [myApplications, setMyApplications] = useState<Application[]>([]);
+  const [myInvitations, setMyInvitations] = useState<JobInvitation[]>([]);
+  const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
   const [balance, setBalance] = useState<string | null>(null);
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -150,12 +155,14 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       fetchMyJobs(publicKey),
       fetchMyApplications(publicKey),
       fetchBalances(publicKey),
+      fetchMyInvitations().catch(() => []),
     ])
-      .then(([jobs, apps, balances]) => {
+      .then(([jobs, apps, balances, invites]) => {
         setMyJobs(jobs);
         setMyApplications(apps);
         setBalance(balances.xlm);
         setUsdcBalance(balances.usdc);
+        setMyInvitations(invites as JobInvitation[]);
       })
       .finally(() => setLoading(false));
   }, [publicKey]);
@@ -313,6 +320,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
           [
             "posted",
             "applied",
+            "invitations",
             "analytics",
             ...(canViewSpending ? (["spending"] as Tab[]) : []),
             "send",
@@ -325,6 +333,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
           <button key={t} onClick={() => setTab(t)} className={clsx("px-6 py-3 text-sm font-medium transition-all border-b-2 -mb-px whitespace-nowrap", tab === t ? "border-market-400 text-market-300" : "border-transparent text-amber-700 hover:text-amber-400")}>
             {t === "posted" ? `Jobs Posted (${myJobs.length})` :
              t === "applied" ? `Applications (${myApplications.length})` :
+             t === "invitations" ? `Invitations${myInvitations.length > 0 ? ` (${myInvitations.length})` : ""}` :
              t === "analytics" ? "Job Analytics" :
              t === "spending" ? "Spending" :
              t === "send" ? "Send Payment" :
@@ -384,6 +393,59 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                 </div>
                 <p className="font-mono font-semibold text-market-400">{formatXLM(app.bidAmount)}</p>
               </Link>
+            ))}
+          </div>
+        )
+      ) : tab === "invitations" ? (
+        myInvitations.length === 0 ? (
+          <div className="card text-center py-16">
+            <p className="font-display text-xl text-amber-100 mb-2">No invitations yet</p>
+            <p className="text-amber-800 text-sm">When a client invites you to apply to their job, it will appear here.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {myInvitations.map((inv) => (
+              <div key={inv.id} className="card space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <Link href={`/jobs/${inv.jobId}`} className="font-display font-semibold text-amber-100 hover:text-market-300 transition-colors truncate block">
+                      {inv.jobTitle}
+                    </Link>
+                    <p className="text-xs text-amber-700 mt-0.5">
+                      From: {inv.clientName || inv.clientAddress.slice(0, 12) + "…"} · {timeAgo(inv.createdAt)}
+                    </p>
+                  </div>
+                  <span className="font-mono text-market-400 font-semibold text-sm flex-shrink-0">
+                    {formatXLM(inv.jobBudget)} {inv.jobCurrency}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-700 bg-ink-800 rounded-lg px-3 py-2 border border-market-500/10">
+                  Hi! {inv.clientName || "A client"} has invited you to apply to their job: &ldquo;{inv.jobTitle}&rdquo; — {inv.jobBudget} {inv.jobCurrency}.{" "}
+                  <Link href={`/jobs/${inv.jobId}`} className="text-market-400 hover:underline">View Job</Link>
+                </p>
+                <div className="flex gap-2">
+                  <Link
+                    href={`/jobs/${inv.jobId}`}
+                    className="flex-1 btn-primary text-xs py-2 text-center"
+                  >
+                    View &amp; Apply
+                  </Link>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await declineInvitation(inv.id);
+                        setMyInvitations((prev) => prev.filter((i) => i.id !== inv.id));
+                        success("Invitation declined.");
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className="flex-1 btn-secondary text-xs py-2"
+                  >
+                    Decline
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         )
