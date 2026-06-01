@@ -15,10 +15,10 @@ import type {
   PortfolioFile,
   TokenInfo,
   TokenBalance,
-  ReferralStats,
   TimeEntry,
   TimeInvoice,
   Message,
+  ReferralStats,
   AssessmentQuestion,
   SkillBadge,
   BulkActionResponse,
@@ -873,7 +873,7 @@ export async function fetchAssessment(skill: string) {
       retakeAvailableAt?: string;
       lastAttempt?: { score: number; passed: boolean };
     };
-  }>(`/api/assessments/${skill}`);
+  }>(`/api/assessments/${encodeURIComponent(skill)}`);
   return data.data;
 }
 
@@ -889,7 +889,7 @@ export async function submitAssessment(
       correct: number;
       total: number;
     };
-  }>("/api/assessments/submit", { skill, answers });
+  }>(`/api/assessments/${encodeURIComponent(skill)}/submit`, { answers });
   return data.data;
 }
 
@@ -919,6 +919,33 @@ export async function verifyAdmin2FA(token: string, setup = false) {
   }>("/api/admin/2fa/verify", { token, setup });
   return { token: data.token, backupCodes: data.data?.backupCodes, message: data.data?.message };
 }
+
+// ─── Bulk Job Actions ───────────────────────────────────────────────────────
+
+export async function bulkCancelJobs(jobIds: string[]): Promise<BulkActionResponse> {
+  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
+    "/api/jobs/bulk-cancel",
+    { jobIds },
+  );
+  return data.data;
+}
+
+export async function bulkExtendJobs(jobIds: string[], days: number): Promise<BulkActionResponse> {
+  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
+    "/api/jobs/bulk-extend",
+    { jobIds, days },
+  );
+  return data.data;
+}
+
+export async function bulkBoostJobs(jobIds: string[], txHash: string): Promise<BulkActionResponse> {
+  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
+    "/api/jobs/bulk-boost",
+    { jobIds, txHash },
+  );
+  return data.data;
+}
+
 
 // ─── IPFS File Upload (Issue #202) ──────────────────────────────────────────
 
@@ -1818,37 +1845,4 @@ export async function acceptInvitation(
   return data.data;
 }
 
-// ─── Bulk Job Actions ─────────────────────────────────────────────────────────
-
-export async function bulkCancelJobs(
-  jobIds: string[]
-): Promise<BulkActionResponse> {
-  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
-    "/api/jobs/bulk/cancel",
-    { jobIds }
-  );
-  return data.data;
-}
-
-export async function bulkExtendJobs(
-  jobIds: string[],
-  days: number
-): Promise<BulkActionResponse> {
-  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
-    "/api/jobs/bulk/extend",
-    { jobIds, days }
-  );
-  return data.data;
-}
-
-export async function bulkBoostJobs(
-  jobIds: string[],
-  amountXlm: number | string
-): Promise<BulkActionResponse> {
-  const { data } = await api.post<{ success: boolean; data: BulkActionResponse }>(
-    "/api/jobs/bulk/boost",
-    { jobIds, amountXlm }
-  );
-  return data.data;
-}
 

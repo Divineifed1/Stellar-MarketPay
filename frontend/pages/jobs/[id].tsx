@@ -9,7 +9,8 @@ import WalletConnect from "@/components/WalletConnect";
 import RatingForm from "@/components/RatingForm";
 import ShareJobModal from "@/components/ShareJobModal";
 import RealtimeBidComparison from "@/components/RealtimeBidComparison";
-import { fetchJob, fetchApplications, acceptApplication, releaseEscrow, releaseMilestone, disputeMilestone, fetchClientReputation } from "@/lib/api";
+import FeeEstimationModal from "@/components/FeeEstimationModal";
+import { fetchJob, fetchApplications, acceptApplication, releaseEscrow, fetchClientReputation, raiseDispute, resolveDispute, timeoutRefund } from "@/lib/api";
 import { formatXLM, formatDate, shortenAddress, statusLabel, statusClass, timeAgo } from "@/utils/format";
 import {
   accountUrl,
@@ -17,7 +18,6 @@ import {
   submitSignedSorobanTransaction,
 } from "@/lib/stellar";
 import { signTransactionWithWallet } from "@/lib/wallet";
-import FeeEstimationModal from "@/components/FeeEstimationModal";
 import Spinner from "@/components/Spinner";
 import type { Application, Job, ClientReputation } from "@/utils/types";
 
@@ -48,27 +48,6 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
   const [resolvingDispute, setResolvingDispute] = useState(false);
   const [clientReputation, setClientReputation] = useState<ClientReputation | null>(null);
   const [pendingTimeoutRefund, setPendingTimeoutRefund] = useState<any>(null);
-
-  const handleConfirmTimeoutRefundFee = async () => {
-    setPendingTimeoutRefund(null);
-  };
-
-  const handleCancelTimeoutRefundFee = () => {
-    setPendingTimeoutRefund(null);
-  };
-
-  const handleRaiseDispute = async () => {
-    if (!publicKey || !jobId || !disputeReason || !disputeDescription) return;
-    setRaisingDispute(true);
-    setActionError(null);
-    try {
-      setShowDisputeModal(false);
-    } catch (error: unknown) {
-      setActionError(error instanceof Error ? error.message : "Failed to raise dispute.");
-    } finally {
-      setRaisingDispute(false);
-    }
-  };
 
   const isClient = Boolean(publicKey && job?.clientAddress === publicKey);
   const isFreelancer = Boolean(publicKey && job?.freelancerAddress === publicKey);
@@ -197,6 +176,35 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
     }
   };
 
+  const handleRaiseDispute = async () => {
+    if (!publicKey || !jobId) return;
+    setRaisingDispute(true);
+    try {
+      await raiseDispute(jobId, { reason: disputeReason, description: disputeDescription });
+      setShowDisputeModal(false);
+      setDisputeReason("");
+      setDisputeDescription("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to raise dispute.");
+    } finally {
+      setRaisingDispute(false);
+    }
+  };
+
+  const handleConfirmTimeoutRefundFee = async () => {
+    if (!publicKey || !jobId) return;
+    setPendingTimeoutRefund(null);
+    try {
+      await timeoutRefund(jobId, publicKey);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Timeout refund failed.");
+    }
+  };
+
+  const handleCancelTimeoutRefundFee = () => {
+    setPendingTimeoutRefund(null);
+  };
+
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-10 animate-pulse">
@@ -315,33 +323,20 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
             </div>
           )}
 
-
-          {job.milestones && job.milestones.length > 0 && (
+          {clientReputation && (
             <div className="mt-6 rounded-xl border border-market-500/20 bg-ink-900/40 p-4">
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <h3 className="font-display text-base font-semibold text-amber-100">Milestone Progress</h3>
-                <span className="text-xs text-amber-700">{job.milestones.filter((m) => m.status === "released").length}/{job.milestones.length} released</span>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-display text-base font-semibold text-amber-100">Client Reputation</h3>
+                <span className="inline-flex items-center rounded-full border border-market-500/30 bg-market-500/10 px-2.5 py-1 text-xs font-semibold text-market-300">
+                  ★ {clientReputation.score.toFixed(1)} / 5.0
+                </span>
               </div>
-              <div className="space-y-3">
-                {job.milestones.map((milestone, index) => (
-                  <div key={`${milestone.description}-${index}`} className="rounded-lg border border-market-500/10 bg-ink-950/40 p-3">
-                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-amber-100">{index + 1}. {milestone.description}</p>
-                        <p className="text-xs text-amber-700 mt-1">{formatXLM(milestone.amount)} {job.currency}{milestone.releasedAt ? ` · released ${formatDate(milestone.releasedAt)}` : ""}</p>
-                      </div>
-                      <span className={["text-xs rounded-full px-2.5 py-1 border capitalize", milestone.status === "released" ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/20" : milestone.status === "disputed" ? "text-red-300 bg-red-500/10 border-red-500/20" : "text-amber-300 bg-amber-500/10 border-amber-500/20"].join(" ")}>{milestone.status}</span>
-                    </div>
-                    {job.status === "in_progress" && milestone.status === "pending" && (isClient || isFreelancer) && (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {isClient && (
-                          <button onClick={() => handleReleaseMilestone(index)} disabled={activeMilestoneIndex === index} className="btn-primary text-xs px-3 py-2 min-h-[36px]">{activeMilestoneIndex === index ? "Processing…" : "Release milestone"}</button>
-                        )}
-                        <button onClick={() => handleDisputeMilestone(index)} disabled={activeMilestoneIndex === index} className="btn-secondary text-xs px-3 py-2 min-h-[36px]">Dispute milestone</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-amber-700">
+                <p>Payment release rate: {clientReputation.paymentReleaseRate}%</p>
+                <p>Dispute rate: {clientReputation.disputeRate}%</p>
+                <p>Completion rate: {clientReputation.completionRate}%</p>
+                <p>Avg payment release time: {clientReputation.avgTimeToReleaseHours}h</p>
+                <p>Response time to applications: {clientReputation.responseTimeToApplicationsHours}h</p>
               </div>
             </div>
           )}
@@ -526,7 +521,7 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
                 className="flex-1 btn-primary py-2.5 min-h-[44px] flex items-center justify-center gap-2"
                 disabled={raisingDispute || !disputeReason || !disputeDescription}
               >
-                {raisingDispute ? <Spinner /> : "Raise Dispute"}
+                {raisingDispute ? <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" /> : "Raise Dispute"}
               </button>
             </div>
             {actionError && <p className="mt-3 text-red-400 text-sm text-center">{actionError}</p>}
