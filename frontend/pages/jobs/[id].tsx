@@ -10,8 +10,8 @@ import WalletConnect from "@/components/WalletConnect";
 import RatingForm from "@/components/RatingForm";
 import ShareJobModal from "@/components/ShareJobModal";
 import RealtimeBidComparison from "@/components/RealtimeBidComparison";
-import JobStatusTimeline from "@/components/JobStatusTimeline";
-import { fetchJob, fetchApplications, acceptApplication, releaseEscrow, fetchClientReputation } from "@/lib/api";
+import FeeEstimationModal from "@/components/FeeEstimationModal";
+import { closeBidding, fetchJob, fetchApplications, acceptApplication, releaseEscrow, fetchClientReputation, raiseDispute, resolveDispute, timeoutRefund } from "@/lib/api";
 import { formatXLM, formatDate, shortenAddress, statusLabel, statusClass, timeAgo } from "@/utils/format";
 import {
   accountUrl,
@@ -49,6 +49,7 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
   const [resolvingDispute, setResolvingDispute] = useState(false);
   const [clientReputation, setClientReputation] = useState<ClientReputation | null>(null);
   const [pendingTimeoutRefund, setPendingTimeoutRefund] = useState<any>(null);
+  const [closingBidding, setClosingBidding] = useState(false);
 
   const isClient = Boolean(publicKey && job?.clientAddress === publicKey);
   const isFreelancer = Boolean(publicKey && job?.freelancerAddress === publicKey);
@@ -189,6 +190,19 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
       setActionError(e instanceof Error ? e.message : "Failed to raise dispute.");
     } finally {
       setRaisingDispute(false);
+    }
+  };
+
+  const handleCloseBidding = async () => {
+    if (!publicKey || !jobId) return;
+    try {
+      setClosingBidding(true);
+      await closeBidding(jobId, publicKey);
+      setJob(await fetchJob(jobId));
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to close bidding.");
+    } finally {
+      setClosingBidding(false);
     }
   };
 
@@ -388,7 +402,9 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
               jobId={job.id}
               initialApplications={applications}
               isClient={isClient}
+              biddingPhase={job.biddingClosedAt ? "reveal" : "commitment"}
               onAcceptApplication={handleAcceptApplication}
+              onCloseBidding={closingBidding ? undefined : handleCloseBidding}
             />
           </div>
         )}
@@ -412,6 +428,7 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
               <ApplicationForm
                 job={job}
                 publicKey={publicKey}
+                biddingPhase={job.biddingClosedAt ? "reveal" : "commitment"}
                 prefillData={prefillData || undefined}
                 onSuccess={() => {
                   setShowApplyForm(false);

@@ -12,7 +12,9 @@ interface RealtimeBidComparisonProps {
   jobId: string;
   initialApplications: Application[];
   isClient: boolean;
+  biddingPhase?: "commitment" | "reveal";
   onAcceptApplication?: (applicationId: string) => void;
+  onCloseBidding?: () => void;
 }
 
 interface NewBidEvent {
@@ -33,7 +35,9 @@ export default function RealtimeBidComparison({
   jobId, 
   initialApplications, 
   isClient, 
-  onAcceptApplication 
+  biddingPhase = "commitment",
+  onAcceptApplication,
+  onCloseBidding,
 }: RealtimeBidComparisonProps) {
   const [applications, setApplications] = useState<Application[]>(initialApplications);
   const [newBidsCount, setNewBidsCount] = useState(0);
@@ -90,7 +94,9 @@ export default function RealtimeBidComparison({
             // Show browser notification if supported
             if ('Notification' in window && Notification.permission === 'granted') {
               new Notification('New Bid Received', {
-                body: `${shortenAddress(newApplication.freelancerAddress)} bid ${formatXLM(newApplication.bidAmount)}`,
+                body: biddingPhase === "commitment"
+                  ? `${shortenAddress(newApplication.freelancerAddress)} submitted a sealed bid`
+                  : `${shortenAddress(newApplication.freelancerAddress)} revealed ${formatXLM(newApplication.revealedBidAmount || newApplication.bidAmount)}`,
                 icon: '/icon-192x192.png',
                 tag: `bid-${newApplication.id}`,
               });
@@ -127,7 +133,7 @@ export default function RealtimeBidComparison({
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [jobId, isVisible]);
+  }, [jobId, isVisible, biddingPhase]);
 
   // Track visibility for new bid counter
   useEffect(() => {
@@ -154,22 +160,29 @@ export default function RealtimeBidComparison({
     : applications;
 
   // Sort applications by bid amount (lowest first) and creation date
-  const sortedApplications = [...visibleApplications].sort((a, b) => {
-    const bidDiff = parseFloat(a.bidAmount) - parseFloat(b.bidAmount);
+  const visibleBidAmount = (app: Application) =>
+    app.bidRevealed && app.revealedBidAmount ? app.revealedBidAmount : app.bidAmount;
+
+  const sortedApplications = [...applications].sort((a, b) => {
+    if (biddingPhase === "commitment") {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    }
+    const bidDiff = parseFloat(visibleBidAmount(a)) - parseFloat(visibleBidAmount(b));
     if (bidDiff !== 0) return bidDiff;
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
-  const averageBid = applications.length > 0 
-    ? applications.reduce((sum, app) => sum + parseFloat(app.bidAmount), 0) / applications.length
+  const revealedApplications = applications.filter((app) => app.bidRevealed && app.revealedBidAmount);
+  const averageBid = revealedApplications.length > 0 
+    ? revealedApplications.reduce((sum, app) => sum + parseFloat(app.revealedBidAmount || "0"), 0) / revealedApplications.length
     : 0;
 
-  const lowestBid = applications.length > 0 
-    ? Math.min(...applications.map(app => parseFloat(app.bidAmount)))
+  const lowestBid = revealedApplications.length > 0 
+    ? Math.min(...revealedApplications.map(app => parseFloat(app.revealedBidAmount || "0")))
     : 0;
 
-  const highestBid = applications.length > 0 
-    ? Math.max(...applications.map(app => parseFloat(app.bidAmount)))
+  const highestBid = revealedApplications.length > 0 
+    ? Math.max(...revealedApplications.map(app => parseFloat(app.revealedBidAmount || "0")))
     : 0;
 
   return (
@@ -185,6 +198,9 @@ export default function RealtimeBidComparison({
               </span>
             )}
           </h2>
+          <span className="text-xs rounded-full border border-market-500/20 px-2 py-1 text-market-300">
+            {biddingPhase === "commitment" ? "Sealed phase" : "Reveal phase"}
+          </span>
           
           {wsRef.current?.readyState === WebSocket.OPEN && (
             <div className="flex items-center gap-1 text-xs text-green-400">
@@ -194,21 +210,8 @@ export default function RealtimeBidComparison({
           )}
         </div>
 
-        {applications.length > 0 && (
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            {isClient && (
-              <select
-                value={tierFilter}
-                onChange={(event) => setTierFilter(event.target.value as FreelancerTier | "")}
-                className="input-field py-2 text-xs"
-                aria-label="Filter applications by freelancer tier"
-              >
-                <option value="">All tiers</option>
-                {tierOptions.map((tier) => (
-                  <option key={tier} value={tier}>{tier}</option>
-                ))}
-              </select>
-            )}
+        {biddingPhase === "reveal" && revealedApplications.length > 0 && (
+          <div className="flex items-center gap-4 text-sm">
             <div className="text-amber-800">
               Avg: <span className="font-mono text-market-400">{formatXLM(averageBid.toString())}</span>
             </div>
@@ -218,6 +221,14 @@ export default function RealtimeBidComparison({
           </div>
         )}
       </div>
+
+      {isClient && biddingPhase === "commitment" && onCloseBidding && (
+        <div className="flex justify-end">
+          <button onClick={onCloseBidding} className="btn-secondary text-sm py-2 px-4">
+            Close Bidding & Start Reveal
+          </button>
+        </div>
+      )}
 
       {/* Applications list */}
       {applications.length === 0 ? (
@@ -235,8 +246,9 @@ export default function RealtimeBidComparison({
         <div className="space-y-4">
           {sortedApplications.map((application, index) => {
             const isHighlighted = highlightedBids.has(application.id);
-            const isLowestBid = parseFloat(application.bidAmount) === lowestBid;
-            const bidPercentage = averageBid > 0 ? (parseFloat(application.bidAmount) / averageBid) * 100 : 100;
+            const bidValue = parseFloat(visibleBidAmount(application));
+            const isLowestBid = biddingPhase === "reveal" && application.bidRevealed && bidValue === lowestBid;
+            const bidPercentage = averageBid > 0 ? (bidValue / averageBid) * 100 : 100;
             
             return (
               <div
@@ -279,12 +291,16 @@ export default function RealtimeBidComparison({
                   <div className="flex items-center gap-3 sm:flex-shrink-0">
                     <div className="text-left sm:text-right">
                       <div className="font-mono text-market-400 font-semibold text-sm">
-                        {formatXLM(application.bidAmount)}
+                        {biddingPhase === "commitment" || !application.bidRevealed
+                          ? "Sealed commitment"
+                          : formatXLM(application.revealedBidAmount || application.bidAmount)}
                       </div>
-                      <div className="text-xs text-amber-800">
-                        {bidPercentage < 90 ? '🟢' : bidPercentage > 110 ? '🔴' : '🟡'}
-                        {bidPercentage.toFixed(0)}% of avg
-                      </div>
+                      {biddingPhase === "reveal" && application.bidRevealed && (
+                        <div className="text-xs text-amber-800">
+                          {bidPercentage < 90 ? '🟢' : bidPercentage > 110 ? '🔴' : '🟡'}
+                          {bidPercentage.toFixed(0)}% of avg
+                        </div>
+                      )}
                     </div>
 
                     <span className={`text-xs px-2.5 py-1 rounded-full border ${badgeClass(application.status)}`}>

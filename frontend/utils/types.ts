@@ -78,7 +78,7 @@ export interface Job {
   expiresAt?: string; // ISO date when job expires if not hired
   extendedCount?: number; // Number of times expiry has been extended
   extendedUntil?: string; // Final expiry after all extensions
-  disputedAt?: string;
+  biddingClosedAt?: string | null;
   clientReputationScore?: number | null;
   disputedBy?: string;
   disputedAt?: string | null;
@@ -114,6 +114,10 @@ export interface Application {
   status: "pending" | "accepted" | "rejected";
   screeningAnswers?: Record<string, string>;
   estimatedDuration?: string;
+  bidCommitment?: string | null;
+  bidRevealed?: boolean;
+  revealedBidAmount?: string | null;
+  revealedAt?: string | null;
   createdAt: string;
   acceptedAt?: string;
 }
