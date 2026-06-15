@@ -63,7 +63,7 @@ function ThemeToggle() {
 }
 
 function App({ Component, pageProps }: AppProps) {
-  const [publicKey, setPublicKey] = useState<string | null>(() => loadStoredPublicKey());
+  const [publicKey, setPublicKey] = useState<string | null>(null);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<{
     prompt: () => Promise<void>;
@@ -85,6 +85,12 @@ function App({ Component, pageProps }: AppProps) {
     const ref = params.get("ref");
     if (ref && /^G[A-Z0-9]{55}$/.test(ref)) {
       localStorage.setItem(REF_STORAGE_KEY, ref);
+    }
+    
+    // Hydration fix: load public key after mount
+    const storedKey = loadStoredPublicKey();
+    if (storedKey && !publicKey) {
+      setPublicKey(storedKey);
     }
   }, []);
 

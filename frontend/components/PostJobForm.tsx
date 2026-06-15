@@ -319,6 +319,7 @@ export default function PostJobForm({
         currency: form.currency,
       });
       
+      await updateJobEscrowId(createdJobId, hash);
       setTxHash(hash);
       setStep("complete");
       localStorage.removeItem(DRAFT_STORAGE_KEY);

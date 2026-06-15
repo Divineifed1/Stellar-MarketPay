@@ -318,9 +318,9 @@ export default function JobDetail({ publicKey, onConnect }: JobDetailProps) {
           </div>
         </div>
 
-        {/* ── TimeTracker (freelancer only) ── */}
-        {isFreelancer && job.status === "in_progress" && (
-          <TimeTracker jobId={job.id} />
+        {/* ── TimeTracker ── */}
+        {(isFreelancer || isClient) && job.status === "in_progress" && (
+          <TimeTracker jobId={job.id} isFreelancer={isFreelancer} isClient={isClient} />
         )}
 
         {/* ── Applications list (client only) ── */}
