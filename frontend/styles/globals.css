@@ -196,6 +196,18 @@ html:not(.dark) .bg-market-900\/40 {
   background-color: #ffffff !important;
 }
 
+html:not(.dark) .bg-amber-500\/10,
+html:not(.dark) .bg-market-500\/5,
+html:not(.dark) .bg-market-500\/10 {
+  background-color: #fff7ed !important;
+}
+
+html:not(.dark) .border-amber-500\/20,
+html:not(.dark) .border-market-500\/20,
+html:not(.dark) .border-market-500\/30 {
+  border-color: rgba(146, 64, 14, 0.35) !important;
+}
+
 html:not(.dark) .btn-primary {
   color: #1c1917 !important;
 }

@@ -1,0 +1,292 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marketpay-backend-config
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: backend
+data:
+  NODE_ENV: production
+  PORT: "4000"
+  STELLAR_NETWORK: testnet
+  HORIZON_URL: https://horizon-testnet.stellar.org
+  REDIS_URL: redis://marketpay-redis:6379
+  ALLOWED_ORIGINS: https://stellar-marketpay.example.com
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marketpay-backend-secrets
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: backend
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://stellarwork:change-me@marketpay-postgres:5432/stellarwork
+  JWT_SECRET: change-me
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marketpay-postgres-secrets
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: postgres
+type: Opaque
+stringData:
+  POSTGRES_USER: stellarwork
+  POSTGRES_PASSWORD: change-me
+  POSTGRES_DB: stellarwork
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketpay-postgres
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: marketpay-postgres
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: marketpay-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-marketpay
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-marketpay
+        app.kubernetes.io/component: postgres
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: marketpay-postgres-secrets
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketpay-redis
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketpay-redis
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-marketpay
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-marketpay
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketpay-backend
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketpay-backend
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-marketpay
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-marketpay
+        app.kubernetes.io/component: backend
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: backend
+          image: ghcr.io/kryputh/stellar-marketpay-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: marketpay-backend-config
+            - secretRef:
+                name: marketpay-backend-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - sleep 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

@@ -329,12 +329,12 @@ function ConfirmModal({ jobTitle, bidAmount, proposal, onConfirm, onClose }: Con
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0c0a06]/90 backdrop-blur-sm animate-fade-in" role="presentation" onMouseDown={(event) => {
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0c0a06]/90 backdrop-blur-sm" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
       <div
         ref={dialogRef}
-        className="card w-full max-w-lg gold-glow border-market-500/30 animate-scale-up"
+        className="card w-full max-w-lg gold-glow border-market-500/30"
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-application-title"
