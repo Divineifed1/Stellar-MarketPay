@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marketpay-frontend-config
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: frontend
+data:
+  NODE_ENV: production
+  PORT: "3000"
+  NEXT_PUBLIC_API_URL: https://stellar-marketpay.example.com/api
+  NEXT_PUBLIC_BASE_URL: https://stellar-marketpay.example.com
+  NEXT_PUBLIC_STELLAR_NETWORK: testnet
+  NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+  NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+  NEXT_PUBLIC_USE_CONTRACT_MOCK: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marketpay-frontend-secrets
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: frontend
+type: Opaque
+stringData:
+  NEXT_PUBLIC_CONTRACT_ID: replace-with-soroban-contract-id
+  NEXT_PUBLIC_USDC_CONTRACT_ID: replace-with-usdc-contract-id
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketpay-frontend
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketpay-frontend
+  namespace: stellar-marketpay
+  labels:
+    app.kubernetes.io/name: stellar-marketpay
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-marketpay
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-marketpay
+        app.kubernetes.io/component: frontend
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: frontend
+          image: ghcr.io/kryputh/stellar-marketpay-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: marketpay-frontend-config
+            - secretRef:
+                name: marketpay-frontend-secrets
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - sleep 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
