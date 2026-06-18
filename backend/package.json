@@ -10,6 +10,7 @@
         "test": "jest --coverage",
         "test:unit": "jest",
         "test:chaos": "jest tests/chaos.test.js --verbose --coverage",
+        "test:sla": "jest src/services/sla_monitor.test.js --verbose",
         "generate-openapi": "node scripts/generate-openapi.js",
         "build": "npm run generate-openapi && npm run lint",
         "migrate": "node src/db/migrate.js",
