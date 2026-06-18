@@ -59,16 +59,39 @@ jobs:
 
       - name: Reset database
         run: |
-          echo "Resetting database..."
-          PGPASSWORD=test psql -h localhost -U test -d postgres -c "DROP DATABASE IF EXISTS marketpay_test;" || true
-          PGPASSWORD=test psql -h localhost -U test -d postgres -c "CREATE DATABASE marketpay_test;" || true
-          echo "Database reset complete"
+          cd backend
+          node -e "
+          const { Pool } = require('pg');
+          const pool = new Pool({
+            host: 'localhost',
+            port: 5432,
+            user: 'test',
+            password: 'test',
+            database: 'postgres',
+            connectionTimeoutMillis: 5000,
+          });
+
+          async function resetDB() {
+            try {
+              await pool.query('DROP DATABASE IF EXISTS marketpay_test');
+              console.log('✅ Dropped existing database');
+              await pool.query('CREATE DATABASE marketpay_test');
+              console.log('✅ Created fresh database');
+              await pool.end();
+            } catch (err) {
+              console.error('Error resetting database:', err.message);
+              process.exit(1);
+            }
+          }
+
+          resetDB();
+          "
 
       - name: Run database migrations
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/marketpay_test
           JWT_SECRET: chaos-test-jwt-secret-with-sufficient-length
-        run: npm run migrate
+        run: cd backend && npm run migrate
 
       - name: Run chaos engineering tests
         env:
