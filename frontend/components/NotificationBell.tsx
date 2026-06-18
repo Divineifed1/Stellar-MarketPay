@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import clsx from "clsx";
 import {
+  fetchNotificationPreferences,
   fetchNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  updateNotificationPreferences,
 } from "@/lib/api";
 import { timeAgo } from "@/utils/format";
 import type { NotificationItem } from "@/utils/types";
@@ -24,6 +26,8 @@ export default function NotificationBell({ publicKey }: NotificationBellProps) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [decentralizedEnabled, setDecentralizedEnabled] = useState(false);
+  const [preferenceSaving, setPreferenceSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -43,6 +47,16 @@ export default function NotificationBell({ publicKey }: NotificationBellProps) {
         if (active) setLoading(false);
       }
     }
+
+    fetchNotificationPreferences()
+      .then((result) => {
+        if (!active) return;
+        setDecentralizedEnabled(Boolean(
+          result.preferences.escrow_created?.decentralized
+            && result.preferences.dispute_opened?.decentralized,
+        ));
+      })
+      .catch(() => undefined);
 
     loadNotifications();
     const intervalId = window.setInterval(loadNotifications, 30000);
@@ -75,6 +89,22 @@ export default function NotificationBell({ publicKey }: NotificationBellProps) {
     }
     setOpen(false);
     router.push(resolveNotificationHref(notification));
+  }
+
+  async function handleDecentralizedToggle() {
+    const nextEnabled = !decentralizedEnabled;
+    setDecentralizedEnabled(nextEnabled);
+    setPreferenceSaving(true);
+    try {
+      await updateNotificationPreferences({
+        escrow_created: { decentralized: nextEnabled },
+        dispute_opened: { decentralized: nextEnabled },
+      });
+    } catch {
+      setDecentralizedEnabled(!nextEnabled);
+    } finally {
+      setPreferenceSaving(false);
+    }
   }
 
   async function handleMarkAllRead() {
@@ -114,6 +144,22 @@ export default function NotificationBell({ publicKey }: NotificationBellProps) {
             >
               Mark all read
             </button>
+          </div>
+
+          <div className="px-4 py-3 border-b border-amber-900/30 bg-ink-800/60">
+            <label className="flex items-start gap-3 text-xs text-amber-200">
+              <input
+                type="checkbox"
+                checked={decentralizedEnabled}
+                disabled={preferenceSaving}
+                onChange={handleDecentralizedToggle}
+                className="mt-0.5 accent-market-400"
+              />
+              <span>
+                <span className="block font-semibold text-amber-100">Decentralized alerts</span>
+                <span className="text-amber-700">Use Push Protocol for funded jobs and disputes, even if MarketPay is offline.</span>
+              </span>
+            </label>
           </div>
 
           <div className="max-h-96 overflow-y-auto">

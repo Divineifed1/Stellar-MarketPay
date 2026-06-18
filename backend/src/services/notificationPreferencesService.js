@@ -10,6 +10,8 @@ const NOTIFICATION_TYPES = [
   "dispute_filed",
   "weekly_digest",
   "announcements",
+  "escrow_created",
+  "dispute_opened",
 ];
 
 async function getPreferences(userAddress) {
@@ -22,12 +24,12 @@ async function getPreferences(userAddress) {
 
     const preferences = {};
     NOTIFICATION_TYPES.forEach((type) => {
-      preferences[type] = { email: true, inapp: true };
+      preferences[type] = { email: true, inapp: true, decentralized: false };
     });
 
     result.rows.forEach((row) => {
       if (!preferences[row.notification_type]) {
-        preferences[row.notification_type] = { email: true, inapp: true };
+        preferences[row.notification_type] = { email: true, inapp: true, decentralized: false };
       }
       preferences[row.notification_type][row.channel] = row.enabled;
     });
@@ -74,7 +76,10 @@ async function isNotificationEnabled(userAddress, notificationType, channel) {
        WHERE user_address = $1 AND notification_type = $2 AND channel = $3`,
       [userAddress, notificationType, channel]
     );
-    return result.rows.length === 0 || result.rows[0].enabled;
+    if (result.rows.length === 0) {
+      return channel === "decentralized" ? false : true;
+    }
+    return result.rows[0].enabled;
   } catch (err) {
     console.error("Error checking notification enabled:", err);
     return true;

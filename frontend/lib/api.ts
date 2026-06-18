@@ -1276,6 +1276,30 @@ export interface NotificationsResponse {
   nextCursor: string | null;
 }
 
+
+export interface NotificationPreferencesResponse {
+  notificationTypes: string[];
+  preferences: Record<string, Record<string, boolean>>;
+}
+
+export async function fetchNotificationPreferences(): Promise<NotificationPreferencesResponse> {
+  const { data } = await api.get<{
+    success: boolean;
+    data: NotificationPreferencesResponse;
+  }>("/api/notifications/preferences");
+  return data.data;
+}
+
+export async function updateNotificationPreferences(
+  preferences: Record<string, Record<string, boolean>>,
+): Promise<Record<string, Record<string, boolean>>> {
+  const { data } = await api.patch<{
+    success: boolean;
+    data: Record<string, Record<string, boolean>>;
+  }>("/api/notifications/preferences", { preferences });
+  return data.data;
+}
+
 export async function fetchNotifications(params?: {
   limit?: number;
   cursor?: string | null;

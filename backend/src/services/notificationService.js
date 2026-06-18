@@ -26,6 +26,62 @@ const EVENT_TYPES = {
   JOB_INVITED: "job_invited",
 };
 
+
+const DECENTRALIZED_EVENT_TYPES = new Set([
+  EVENT_TYPES.ESCROW_CREATED,
+  EVENT_TYPES.DISPUTE_OPENED,
+]);
+
+function getPushRecipient(address) {
+  return process.env.PUSH_RECIPIENT_CHAIN
+    ? `${process.env.PUSH_RECIPIENT_CHAIN}:${address}`
+    : `eip155:1:${address}`;
+}
+
+async function sendDecentralizedPush({ recipientAddress, eventType, jobId, payload }) {
+  if (!DECENTRALIZED_EVENT_TYPES.has(eventType)) return true;
+
+  const { isNotificationEnabled } = require("./notificationPreferencesService");
+  const enabled = await isNotificationEnabled(recipientAddress, eventType, "decentralized");
+  if (!enabled) return true;
+
+  const channel = process.env.PUSH_CHANNEL_ADDRESS;
+  const signerPrivateKey = process.env.PUSH_CHANNEL_PRIVATE_KEY;
+  if (!channel || !signerPrivateKey) {
+    console.warn("[notifications] Push Protocol channel is not configured");
+    return false;
+  }
+
+  const content = generateInAppContent(eventType, { ...payload, jobId });
+  const sdkEndpoint = process.env.PUSH_SDK_RELAY_URL || "https://backend-staging.epns.io/apis/v1/payloads";
+  await axios.post(sdkEndpoint, {
+    channel,
+    signer: signerPrivateKey,
+    recipients: [getPushRecipient(recipientAddress)],
+    env: process.env.PUSH_ENV || "staging",
+    notification: { title: content.title, body: content.body },
+    payload: {
+      title: content.title,
+      body: content.body,
+      cta: `${process.env.FRONTEND_URL || "http://localhost:3000"}${content.linkPath}`,
+      category: eventType,
+    },
+  }, { timeout: 10000 });
+
+  return true;
+}
+
+async function queueDecentralizedNotification({ recipientAddress, eventType, jobId, payload }) {
+  if (!DECENTRALIZED_EVENT_TYPES.has(eventType)) return null;
+  return queueNotification({
+    recipientAddress,
+    notificationType: "decentralized",
+    eventType,
+    jobId,
+    payload,
+  });
+}
+
 function rowToInAppNotification(row) {
   return {
     id: row.id,
@@ -441,6 +497,13 @@ async function processPendingNotifications(sendEmailFn) {
           },
           sendEmailFn
         );
+      } else if (notification.notification_type === "decentralized") {
+        success = await sendDecentralizedPush({
+          recipientAddress: notification.recipient_address,
+          eventType: notification.event_type,
+          jobId: notification.job_id,
+          payload: notification.payload,
+        });
       } else if (notification.notification_type === "webhook") {
         if (!prefs.webhook_url) {
           // No webhook URL configured, mark as sent (skip)
@@ -544,6 +607,13 @@ async function notifyEscrowEvent({ eventType, jobId, clientAddress, freelancerAd
       payload: data,
     });
 
+    await queueDecentralizedNotification({
+      recipientAddress: recipient,
+      eventType,
+      jobId,
+      payload: data,
+    });
+
     // Queue webhook notification
     await queueNotification({
       recipientAddress: recipient,
@@ -561,6 +631,8 @@ module.exports = {
   queueNotification,
   createInAppNotification,
   createJobNotification,
+  queueDecentralizedNotification,
+  sendDecentralizedPush,
   listInAppNotifications,
   markInAppNotificationRead,
   markAllInAppNotificationsRead,

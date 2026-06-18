@@ -32,7 +32,22 @@ jest.mock("next/link", () => ({
 }));
 
 jest.mock("@/lib/api", () => ({
+  fetchNotificationPreferences: jest.fn().mockResolvedValue({
+    notificationTypes: ["escrow_created", "dispute_opened"],
+    preferences: {
+      escrow_created: { decentralized: false },
+      dispute_opened: { decentralized: false },
+    },
+  }),
+  fetchNotifications: jest.fn().mockResolvedValue({
+    notifications: [],
+    unreadCount: 0,
+    nextCursor: null,
+  }),
+  markAllNotificationsRead: jest.fn().mockResolvedValue({ updatedCount: 0 }),
+  markNotificationRead: jest.fn().mockResolvedValue({}),
   submitRating: jest.fn().mockResolvedValue({}),
+  updateNotificationPreferences: jest.fn().mockResolvedValue({}),
 }));
 
 jest.mock("@/lib/i18n", () => ({

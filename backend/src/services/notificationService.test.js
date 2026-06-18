@@ -12,7 +12,9 @@ jest.mock("../db/pool", () => ({
 const {
   generateEmailContent,
   EVENT_TYPES,
+  queueDecentralizedNotification,
 } = require("./notificationService");
+const pool = require("../db/pool");
 
 describe("Notification Service", () => {
   describe("generateEmailContent", () => {
@@ -125,6 +127,58 @@ describe("Notification Service", () => {
       // Job title should be included in both text and HTML versions
       expect(content.text).toContain(dataWithSpecialChars.jobTitle);
       expect(content.html).toContain(dataWithSpecialChars.jobTitle);
+    });
+  });
+
+  describe("decentralized Push Protocol mapping", () => {
+    beforeEach(() => {
+      pool.query.mockReset();
+    });
+
+    test("queues Push notifications for funded jobs", async () => {
+      pool.query.mockResolvedValue({ rows: [{ id: "queue-1" }] });
+
+      const result = await queueDecentralizedNotification({
+        recipientAddress: "G".padEnd(56, "A"),
+        eventType: EVENT_TYPES.ESCROW_CREATED,
+        jobId: "job-1",
+        payload: { jobTitle: "Funded job" },
+      });
+
+      expect(result).toEqual({ id: "queue-1" });
+      expect(pool.query.mock.calls[0][1]).toEqual([
+        "G".padEnd(56, "A"),
+        "decentralized",
+        EVENT_TYPES.ESCROW_CREATED,
+        "job-1",
+        JSON.stringify({ jobTitle: "Funded job" }),
+      ]);
+    });
+
+    test("queues Push notifications for disputes", async () => {
+      pool.query.mockResolvedValue({ rows: [{ id: "queue-2" }] });
+
+      await queueDecentralizedNotification({
+        recipientAddress: "G".padEnd(56, "B"),
+        eventType: EVENT_TYPES.DISPUTE_OPENED,
+        jobId: "job-2",
+        payload: { jobTitle: "Disputed job" },
+      });
+
+      expect(pool.query.mock.calls[0][1][1]).toBe("decentralized");
+      expect(pool.query.mock.calls[0][1][2]).toBe(EVENT_TYPES.DISPUTE_OPENED);
+    });
+
+    test("does not queue Push notifications for non-critical events", async () => {
+      const result = await queueDecentralizedNotification({
+        recipientAddress: "G".padEnd(56, "C"),
+        eventType: EVENT_TYPES.NEW_MESSAGE,
+        jobId: "job-3",
+        payload: { jobTitle: "Chatty job" },
+      });
+
+      expect(result).toBeNull();
+      expect(pool.query).not.toHaveBeenCalled();
     });
   });
 

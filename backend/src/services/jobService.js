@@ -7,7 +7,11 @@
 
 const pool = require("../db/pool");
 const { refreshFreelancerTier } = require("./profileService");
-const { createJobNotification, EVENT_TYPES } = require("./notificationService");
+const {
+  createJobNotification,
+  queueDecentralizedNotification,
+  EVENT_TYPES,
+} = require("./notificationService");
 
 /**
  * Camel-cased job record returned by this service.
@@ -764,6 +768,18 @@ async function raiseDispute(jobId, { reason, description, raisedBy }) {
       body: `${raisedBy.slice(0, 6)}...${raisedBy.slice(-4)} filed a dispute for "${job.title}".`,
       jobId,
       linkPath: `/disputes/${jobId}`,
+    });
+
+    await queueDecentralizedNotification({
+      recipientAddress: userAddress,
+      eventType: EVENT_TYPES.DISPUTE_OPENED,
+      jobId,
+      payload: {
+        jobTitle: job.title,
+        jobId,
+        actorAddress: raisedBy,
+        reason,
+      },
     });
   }
 
