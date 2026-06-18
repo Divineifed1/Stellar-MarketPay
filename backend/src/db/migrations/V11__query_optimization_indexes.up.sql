@@ -7,7 +7,7 @@ ALTER TABLE jobs
     setweight(to_tsvector('simple', COALESCE(title, '')), 'A') ||
     setweight(to_tsvector('simple', COALESCE(description, '')), 'B') ||
     setweight(to_tsvector('simple', COALESCE(array_to_string(skills, ' '), '')), 'C')
-  ) STORED;
+  ) VIRTUAL;
 
 CREATE INDEX IF NOT EXISTS jobs_open_public_created_idx
   ON jobs(created_at DESC, id DESC)
