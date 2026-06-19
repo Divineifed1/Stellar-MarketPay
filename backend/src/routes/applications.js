@@ -20,6 +20,10 @@ const { FREELANCER_TIERS } = require("../services/profileService");
 const { logContractInteraction } = require("../services/contractAuditService");
 const { notifyEscrowEvent, EVENT_TYPES } = require("../services/notificationService");
 const { getJob } = require("../services/jobService");
+const { analyzeBidEvent } = require("../services/fraudDetectionService");
+const { createServiceLogger } = require("../utils/logger");
+
+const applicationLogger = createServiceLogger("applications");
 
 /**
  * @swagger
@@ -150,6 +154,23 @@ router.get("/freelancer/:publicKey", generalApplicationRateLimiter, async (req, 
 router.post("/", applicationRateLimiter, async (req, res, next) => {
   try {
     const app = await submitApplication(req.body);
+    let fraudAlert = null;
+
+    try {
+      const fraudResult = await analyzeBidEvent({
+        jobId: app.jobId,
+        applicationId: app.id,
+        freelancerAddress: app.freelancerAddress,
+        bidAmount: app.bidAmount,
+        currency: app.currency,
+        jobBudget: job.budget,
+        sourceIp: req.ip,
+        userAgent: req.get("User-Agent"),
+      });
+      fraudAlert = fraudResult.alert;
+    } catch (error) {
+      applicationLogger.warn({ error: error.message, applicationId: app.id }, "Fraud analysis failed");
+    }
     
     // Emit WebSocket event for real-time bid updates
     const broadcastRealtime = req.app.locals.broadcastRealtime;
@@ -170,6 +191,19 @@ router.post("/", applicationRateLimiter, async (req, res, next) => {
         },
         jobTitle: job.title
       });
+
+      if (fraudAlert) {
+        broadcastRealtime(`job:${app.jobId}:fraud`, {
+          type: 'bid_alert',
+          alert: fraudAlert,
+          application: {
+            id: app.id,
+            freelancerAddress: app.freelancerAddress,
+            bidAmount: app.bidAmount,
+            status: app.status
+          }
+        });
+      }
     }
     
     res.status(201).json({ success: true, data: app });
