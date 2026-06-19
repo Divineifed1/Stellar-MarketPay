@@ -462,7 +462,7 @@ mod tests {
         let env = make_env();
         let root = make_addr(&env); // no parent registered
 
-        let rewards = calculate_tree_rewards(&env, &root, 10_000_000);
+        let rewards = calculate_tree_rewards(&env, &root, 10_000_000i128);
         assert_eq!(rewards.len(), 0);
     }
 
@@ -475,7 +475,7 @@ mod tests {
             register_referral(&env, users[i].clone(), users[i + 1].clone());
         }
 
-        let rewards = calculate_tree_rewards(&env, &users[5], 10_000_000);
+        let rewards = calculate_tree_rewards(&env, &users[5], 10_000_000i128);
         // Only 3 levels should be rewarded regardless of tree depth
         assert_eq!(rewards.len(), 3);
         assert_eq!(rewards.get(0).unwrap().level, 1);

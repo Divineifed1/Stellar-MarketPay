@@ -1775,27 +1775,6 @@ export async function fetchReferralTree(
   return data.data;
 }
 
-/**
- * Fetch the referral tree for a user (full subtree visualization).
- */
-export interface ReferralTreeNode {
-  address: string;
-  displayName?: string | null;
-  depth: number;
-  children: ReferralTreeNode[];
-  directCount: number;
-  totalEarned: string;
-}
-
-export async function fetchReferralTree(
-  publicKey: string,
-): Promise<ReferralTreeNode> {
-  const { data } = await api.get<{ success: boolean; data: ReferralTreeNode }>(
-    `/api/referrals/${encodeURIComponent(publicKey)}/tree`,
-  );
-  return data.data;
-}
-
 // ─── Saved Searches (Issue #284) ─────────────────────────────────────────────
 
 export interface SavedSearch {
