@@ -4,16 +4,18 @@
  * Referral dashboard tab shown on the user dashboard.
  * Features:
  *  - Unique referral link generator (copy to clipboard)
- *  - Summary stats: total invited, pending, paid, total XLM earned
+ *  - Summary stats: total invited, pending, paid, total XLM earned (including multi-level)
  *  - Referee list with status badges
  *  - Payout history table
+ *  - Multi-level referral tree visualization
  */
 import { useState, useEffect, useCallback } from "react";
-import { fetchReferralStats } from "@/lib/api";
+import { fetchReferralStats, fetchReferralTree } from "@/lib/api";
 import type {
   ReferralStats,
   ReferralReferee,
   ReferralPayout,
+  ReferralTreeNode,
 } from "@/utils/types";
 import { shortenAddress, copyToClipboard } from "@/utils/format";
 import clsx from "clsx";
@@ -76,10 +78,12 @@ export default function ReferralDashboard({
   publicKey,
 }: ReferralDashboardProps) {
   const [stats, setStats] = useState<ReferralStats | null>(null);
+  const [tree, setTree] = useState<ReferralTreeNode | null>(null);
   const [loading, setLoading] = useState(true);
+  const [treeLoading, setTreeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<"referees" | "payouts">(
+  const [activeTab, setActiveTab] = useState<"referees" | "payouts" | "tree">(
     "referees",
   );
 
@@ -98,9 +102,29 @@ export default function ReferralDashboard({
     }
   }, [publicKey]);
 
+  const loadTree = useCallback(async () => {
+    if (!publicKey || tree) return; // Only load once
+    setTreeLoading(true);
+    try {
+      const data = await fetchReferralTree(publicKey);
+      setTree(data);
+    } catch {
+      // Tree might not exist yet, that's ok
+      setTree(null);
+    } finally {
+      setTreeLoading(false);
+    }
+  }, [publicKey, tree]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (activeTab === "tree" && !tree && !treeLoading) {
+      loadTree();
+    }
+  }, [activeTab, tree, treeLoading, loadTree]);
 
   const handleCopy = async () => {
     const ok = await copyToClipboard(referralLink);
@@ -260,11 +284,11 @@ export default function ReferralDashboard({
         ))}
       </div>
 
-      {/* ── Tabs: Referees / Payouts ────────────────────────────────────── */}
+      {/* ── Tabs: Referees / Payouts / Tree ─────────────────────────────── */}
       {stats && stats.totalReferrals > 0 ? (
         <div className="card">
           <div className="flex border-b border-market-500/10 mb-5 -mx-6 px-6">
-            {(["referees", "payouts"] as const).map((t) => (
+            {(["referees", "payouts", "tree"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setActiveTab(t)}
@@ -277,7 +301,9 @@ export default function ReferralDashboard({
               >
                 {t === "referees"
                   ? `Invited Users (${stats.totalReferrals})`
-                  : `Payout History (${stats.payouts.length})`}
+                  : t === "payouts"
+                    ? `Payout History (${stats.payouts.length})`
+                    : "Referral Tree"}
               </button>
             ))}
           </div>
@@ -320,6 +346,39 @@ export default function ReferralDashboard({
                 </table>
               </div>
             ))}
+
+          {activeTab === "tree" && (
+            <div>
+              {treeLoading ? (
+                <div className="text-center py-10">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-market-400"></div>
+                  <p className="text-amber-700 text-sm mt-3">Loading tree...</p>
+                </div>
+              ) : tree ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 mb-4 p-3 rounded-xl bg-ink-900/40 border border-market-500/10">
+                    <svg className="w-5 h-5 text-market-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-xs text-amber-700">
+                      <span className="font-semibold text-market-400">
+                        Multi-level rewards:
+                      </span>{" "}
+                      2% direct referrals, 0.75% level-2, 0.25% level-3
+                    </p>
+                  </div>
+                  <ReferralTreeView node={tree} isRoot={true} />
+                </div>
+              ) : (
+                <div className="text-center py-10">
+                  <p className="text-amber-700 text-sm">No referral tree yet.</p>
+                  <p className="text-amber-800 text-xs mt-1">
+                    Your tree will appear here once referrals are registered.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         /* Empty state */
@@ -424,5 +483,237 @@ function PayoutRow({ payout }: { payout: ReferralPayout }) {
         })}
       </td>
     </tr>
+  );
+}
+
+function ReferralTreeView({
+  node,
+  isRoot = false,
+}: {
+  node: ReferralTreeNode;
+  isRoot?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(isRoot);
+  const hasChildren = node.children && node.children.length > 0;
+
+  const depthLabel =
+    node.depth === 0 ? "You" : node.depth === 1 ? "Level 1" : node.depth === 2 ? "Level 2" : "Level 3";
+  const depthColor =
+    node.depth === 0
+      ? "text-market-400"
+      : node.depth === 1
+        ? "text-emerald-400"
+        : node.depth === 2
+          ? "text-amber-400"
+          : "text-amber-600";
+
+  return (
+    <div className={clsx("space-y-2", !isRoot && "ml-6 pl-4 border-l-2 border-market-500/20")}>
+      <div
+        className={clsx(
+          "flex items-center gap-3 p-3 rounded-xl border transition-all",
+          isRoot
+            ? "bg-market-500/10 border-market-500/30"
+            : "bg-ink-900/40 border-market-500/10 hover:border-market-500/25",
+          hasChildren && "cursor-pointer",
+        )}
+        onClick={() => hasChildren && setExpanded(!expanded)}
+      >
+        {hasChildren && (
+          <div className="flex-shrink-0">
+            <svg
+              className={clsx(
+                "w-4 h-4 text-amber-700 transition-transform",
+                expanded && "rotate-90",
+              )}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 5l7 7-7 7"
+              />
+            </svg>
+          </div>
+        )}
+        {!hasChildren && <div className="w-4" />}
+
+        <div className="w-8 h-8 rounded-lg bg-market-500/10 border border-market-500/20 flex items-center justify-center flex-shrink-0">
+          <svg
+            className="w-4 h-4 text-market-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+            />
+          </svg>
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <p className="text-sm font-medium text-amber-100 truncate">
+              {node.displayName || shortenAddress(node.address)}
+            </p>
+            <span className={clsx("text-xs font-semibold", depthColor)}>
+              {depthLabel}
+            </span>
+          </div>
+          <p className="text-xs text-amber-800 font-mono truncate">
+            {shortenAddress(node.address)}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-4 flex-shrink-0">
+          {hasChildren && (
+            <span className="text-xs text-amber-700">
+              {node.children.length} {node.children.length === 1 ? "referral" : "referrals"}
+            </span>
+          )}
+          {parseFloat(node.earnedXlm || "0") > 0 && (
+            <span className="text-sm font-mono font-semibold text-emerald-400">
+              +{parseFloat(node.earnedXlm).toLocaleString("en-US", { maximumFractionDigits: 4 })}{" "}
+              XLM
+            </span>
+          )}
+        </div>
+      </div>
+
+      {expanded && hasChildren && (
+        <div className="space-y-2">
+          {node.children.map((child, idx) => (
+            <ReferralTreeView key={`${child.address}-${idx}`} node={child} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/**
+ * Recursive tree visualization component.
+ * Renders a referral tree node and all its children with indentation and visual indicators.
+ */
+function ReferralTreeView({
+  node,
+  isRoot = false,
+  level = 0,
+}: {
+  node: ReferralTreeNode;
+  isRoot?: boolean;
+  level?: number;
+}) {
+  const [expanded, setExpanded] = useState(isRoot || level < 2);
+  const hasChildren = node.children && node.children.length > 0;
+
+  return (
+    <div className="relative">
+      <div
+        className={clsx(
+          "flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl transition-all",
+          isRoot
+            ? "bg-market-500/10 border-2 border-market-500/30"
+            : "bg-ink-900/40 border border-market-500/10 hover:border-market-500/20",
+        )}
+        style={{ marginLeft: `${level * 20}px` }}
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          {hasChildren && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center bg-market-500/10 border border-market-500/20 text-market-400 hover:bg-market-500/20 transition-all"
+            >
+              <svg
+                className={clsx("w-3 h-3 transition-transform", expanded && "rotate-90")}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2.5}
+                  d="M9 5l7 7-7 7"
+                />
+              </svg>
+            </button>
+          )}
+          {!hasChildren && <div className="w-5" />}
+
+          <div className="w-6 h-6 rounded-lg bg-market-500/10 border border-market-500/20 flex items-center justify-center flex-shrink-0">
+            <svg
+              className={clsx("w-3.5 h-3.5", isRoot ? "text-market-300" : "text-market-400")}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+              />
+            </svg>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className={clsx("text-sm font-medium truncate", isRoot ? "text-amber-100" : "text-amber-200")}>
+                {node.displayName || shortenAddress(node.address)}
+              </p>
+              {isRoot && (
+                <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold text-market-300 bg-market-500/20 border border-market-500/30">
+                  YOU
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-amber-800 font-mono">{shortenAddress(node.address)}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {hasChildren && (
+            <span className="text-xs text-amber-700 bg-ink-950/60 px-2 py-0.5 rounded border border-market-500/10">
+              {node.children.length} {node.children.length === 1 ? "referral" : "referrals"}
+            </span>
+          )}
+          {parseFloat(node.earnedXlm) > 0 && (
+            <span className="text-sm font-mono font-semibold text-emerald-400">
+              +{parseFloat(node.earnedXlm).toLocaleString("en-US", { maximumFractionDigits: 4 })} XLM
+            </span>
+          )}
+          {node.depth > 0 && (
+            <span
+              className={clsx(
+                "text-xs px-1.5 py-0.5 rounded font-medium",
+                node.depth === 1
+                  ? "bg-market-500/20 text-market-300 border border-market-500/30"
+                  : node.depth === 2
+                    ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    : "bg-ink-700 text-amber-700 border border-market-500/10",
+              )}
+            >
+              L{node.depth}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {hasChildren && expanded && (
+        <div className="mt-2 space-y-2">
+          {node.children.map((child) => (
+            <ReferralTreeView key={child.address} node={child} level={level + 1} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

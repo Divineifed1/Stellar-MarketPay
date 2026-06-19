@@ -1,9 +1,10 @@
 /**
  * src/routes/referrals.js
  *
- * GET  /api/referrals/info               — public: bonus percentage info
- * GET  /api/referrals/:publicKey         — referral history & earnings (auth required)
- * POST /api/referrals/register           — record a new referral on signup
+ * GET  /api/referrals/info                   — public: bonus tiers info
+ * GET  /api/referrals/:publicKey             — flat stats + history (auth)
+ * GET  /api/referrals/:publicKey/tree        — full referral tree (auth)
+ * POST /api/referrals/register               — record a new referral on signup
  */
 "use strict";
 
@@ -13,15 +14,23 @@ const { verifyJWT } = require("../middleware/auth");
 const {
   registerReferral,
   getReferralStats,
+  getReferralTree,
   REFERRAL_BONUS_BPS,
+  LEVEL_BPS,
 } = require("../services/referralService");
 
 const router = express.Router();
 const generalRateLimiter = createRateLimiter(60, 1);
 
 /**
- * GET /api/referrals/info
- * Public — returns the current bonus percentage so the frontend can display it.
+ * @swagger
+ * /api/referrals/info:
+ *   get:
+ *     summary: Get referral bonus tier information
+ *     tags: [Referrals]
+ *     responses:
+ *       200:
+ *         description: Bonus tier details
  */
 router.get("/info", (req, res) => {
   res.json({
@@ -29,15 +38,35 @@ router.get("/info", (req, res) => {
     data: {
       bonusBps: REFERRAL_BONUS_BPS,
       bonusPercent: (REFERRAL_BONUS_BPS / 100).toFixed(0),
-      description: `Earn ${REFERRAL_BONUS_BPS / 100}% of your referee's first job earnings`,
+      levelBps: LEVEL_BPS,
+      levels: LEVEL_BPS.map((bps, i) => ({
+        level: i + 1,
+        bps,
+        percent: (bps / 100).toFixed(2),
+        description: i === 0
+          ? "Direct referral"
+          : i === 1
+          ? "Referral of your referral"
+          : "3rd-degree referral",
+      })),
+      description: `Earn up to ${LEVEL_BPS.reduce((a, b) => a + b, 0) / 100}% in multi-level referral bonuses`,
     },
   });
 });
 
 /**
- * GET /api/referrals/:publicKey
- * Returns referral stats and history for the given referrer address.
- * Requires JWT auth — users can only view their own referral data.
+ * @swagger
+ * /api/referrals/{publicKey}:
+ *   get:
+ *     summary: Get flat referral stats and history for a user
+ *     tags: [Referrals]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: publicKey
+ *         required: true
+ *         schema: { type: string }
  */
 router.get(
   "/:publicKey",
@@ -48,12 +77,8 @@ router.get(
       const { publicKey } = req.params;
 
       if (!/^G[A-Z0-9]{55}$/.test(publicKey)) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Invalid public key" });
+        return res.status(400).json({ success: false, error: "Invalid public key" });
       }
-
-      // Users may only fetch their own referral data
       if (req.user?.publicKey && req.user.publicKey !== publicKey) {
         return res.status(403).json({ success: false, error: "Forbidden" });
       }
@@ -67,9 +92,58 @@ router.get(
 );
 
 /**
- * POST /api/referrals/register
- * Called during profile creation when a ?ref= query param was present.
- * Body: { referrerAddress, refereeAddress }
+ * @swagger
+ * /api/referrals/{publicKey}/tree:
+ *   get:
+ *     summary: Get the full referral tree rooted at publicKey (for visualization)
+ *     tags: [Referrals]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: publicKey
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get(
+  "/:publicKey/tree",
+  verifyJWT,
+  generalRateLimiter,
+  async (req, res, next) => {
+    try {
+      const { publicKey } = req.params;
+
+      if (!/^G[A-Z0-9]{55}$/.test(publicKey)) {
+        return res.status(400).json({ success: false, error: "Invalid public key" });
+      }
+      if (req.user?.publicKey && req.user.publicKey !== publicKey) {
+        return res.status(403).json({ success: false, error: "Forbidden" });
+      }
+
+      const tree = await getReferralTree(publicKey);
+      res.json({ success: true, data: tree });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * @swagger
+ * /api/referrals/register:
+ *   post:
+ *     summary: Record a new referral relationship
+ *     tags: [Referrals]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [referrerAddress, refereeAddress]
+ *             properties:
+ *               referrerAddress: { type: string }
+ *               refereeAddress:  { type: string }
  */
 router.post("/register", generalRateLimiter, async (req, res, next) => {
   try {
@@ -89,6 +163,9 @@ router.post("/register", generalRateLimiter, async (req, res, next) => {
       message: referral ? "Referral registered" : "Referral already exists",
     });
   } catch (e) {
+    if (e.status) {
+      return res.status(e.status).json({ success: false, error: e.message });
+    }
     next(e);
   }
 });

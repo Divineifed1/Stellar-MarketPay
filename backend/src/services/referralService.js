@@ -1,27 +1,37 @@
 /**
  * src/services/referralService.js
  *
- * Manages referral relationships and bonus payout recording.
+ * Manages the on-chain referral tree and multi-level bonus payouts.
+ *
+ * Reward tiers (mirroring contracts/marketpay-contract/src/referral.rs):
+ *   Level 1 (direct referrer)  — 2.00%  (200 bps)
+ *   Level 2 (referrer's ref.)  — 0.75%  ( 75 bps)
+ *   Level 3 (depth-3 ancestor) — 0.25%  ( 25 bps)
  *
  * Flow:
- *   1. When a new user signs up via a referral link (?ref=GXXX), call
- *      registerReferral(referrerAddress, refereeAddress) to create the
- *      pending referral row.
- *   2. When the referee's first job is released, call
- *      processReferralPayout(jobId, refereeAddress, amountXlm, contractTxHash)
- *      which marks the referral as paid and writes an audit row.
- *   3. GET /api/referrals/:publicKey returns the referrer's history via
- *      getReferralStats(publicKey).
+ *   1. New user signs up via ?ref=GXXX → registerReferral() writes to
+ *      referrals + referral_tree tables.
+ *   2. Escrow release → processMultiLevelPayout() walks the tree up to
+ *      3 levels, records each bonus in multi_level_payouts, updates
+ *      referrals.status for level-1 entry.
+ *   3. GET /api/referrals/:publicKey → getReferralStats() returns flat stats.
+ *   4. GET /api/referrals/:publicKey/tree → getReferralTree() returns the
+ *      full subtree for the visualization component.
  */
 "use strict";
 
 const pool = require("../db/pool");
 
-const REFERRAL_BONUS_BPS = 200; // 2% = 200 basis points
+// ── Reward tiers (basis points, matching Rust contract constants) ─────────────
+const LEVEL_BPS = [200, 75, 25]; // index 0 = level 1
+const BPS_DENOMINATOR = 10_000;
+const MAX_DEPTH = 3;
+
+// Exposed for the /info endpoint
+const REFERRAL_BONUS_BPS = LEVEL_BPS[0]; // primary/direct bonus
 
 /**
  * Validate a Stellar G-address.
- * @param {string} key
  */
 function validatePublicKey(key) {
   if (!key || !/^G[A-Z0-9]{55}$/.test(key)) {
@@ -31,13 +41,15 @@ function validatePublicKey(key) {
   }
 }
 
+// ── Registration ──────────────────────────────────────────────────────────────
+
 /**
  * Register a referral relationship when a new user signs up via a referral link.
- * Idempotent — silently ignores duplicate (referrer, referee) pairs.
+ * Writes both the legacy `referrals` row and the new `referral_tree` row.
  *
- * @param {string} referrerAddress  The user who shared the link.
- * @param {string} refereeAddress   The new user who signed up.
- * @returns {Promise<Object|null>}  The referral row, or null if already existed.
+ * @param {string} referrerAddress  The user who shared the link (parent).
+ * @param {string} refereeAddress   The new user (child).
+ * @returns {Promise<Object|null>}  The referral row or null if duplicate.
  */
 async function registerReferral(referrerAddress, refereeAddress) {
   validatePublicKey(referrerAddress);
@@ -49,67 +61,102 @@ async function registerReferral(referrerAddress, refereeAddress) {
     throw e;
   }
 
-  try {
+  // ── Cycle detection ────────────────────────────────────────────────────────
+  // Walk up the existing tree from referrerAddress for MAX_DEPTH steps.
+  // If we encounter refereeAddress in the chain, reject.
+  let cursor = referrerAddress;
+  for (let i = 0; i < MAX_DEPTH + 1; i++) {
     const { rows } = await pool.query(
-      `INSERT INTO referrals (referrer_address, referee_address, status)
-       VALUES ($1, $2, 'pending')
+      "SELECT parent_address FROM referral_tree WHERE child_address = $1 LIMIT 1",
+      [cursor],
+    );
+    if (!rows.length) break;
+    cursor = rows[0].parent_address;
+    if (cursor === refereeAddress) {
+      const e = new Error("Registering this referral would create a cycle");
+      e.status = 400;
+      throw e;
+    }
+  }
+
+  // ── Compute child's depth ─────────────────────────────────────────────────
+  const { rows: parentRows } = await pool.query(
+    "SELECT depth FROM referral_tree WHERE child_address = $1 LIMIT 1",
+    [referrerAddress],
+  );
+  const parentDepth = parentRows.length ? parentRows[0].depth : 0;
+  const childDepth = parentDepth + 1;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // ── Legacy referrals table ────────────────────────────────────────────────
+    const { rows: refRows } = await client.query(
+      `INSERT INTO referrals (referrer_address, referee_address, status, depth, parent_address)
+       VALUES ($1, $2, 'pending', 1, $1)
        ON CONFLICT (referrer_address, referee_address) DO NOTHING
        RETURNING *`,
       [referrerAddress, refereeAddress],
     );
 
-    if (rows.length === 0) return null; // already existed
-
-    // Increment referral_count on the referrer's profile
-    await pool.query(
-      `UPDATE profiles
-       SET referral_count = referral_count + 1, updated_at = NOW()
-       WHERE public_key = $1`,
-      [referrerAddress],
+    // ── referral_tree table ───────────────────────────────────────────────────
+    await client.query(
+      `INSERT INTO referral_tree (child_address, parent_address, depth)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (child_address) DO NOTHING`,
+      [refereeAddress, referrerAddress, childDepth],
     );
 
-    return rows[0];
+    if (refRows.length > 0) {
+      // Increment referral_count on the referrer's profile
+      await client.query(
+        `UPDATE profiles
+         SET referral_count = referral_count + 1, updated_at = NOW()
+         WHERE public_key = $1`,
+        [referrerAddress],
+      );
+    }
+
+    await client.query("COMMIT");
+    return refRows.length ? refRows[0] : null;
   } catch (err) {
-    // FK violation means one of the addresses has no profile yet — not an error
-    if (err.code === "23503") return null;
+    await client.query("ROLLBACK");
+    if (err.code === "23503") return null; // FK violation = no profile yet
     throw err;
+  } finally {
+    client.release();
   }
 }
 
 /**
- * Look up the referrer for a given referee address.
- *
- * @param {string} refereeAddress
- * @returns {Promise<string|null>}  Referrer public key, or null if none.
+ * Look up the direct referrer (level-1 parent) for a given address.
  */
 async function getReferrerForReferee(refereeAddress) {
   const { rows } = await pool.query(
-    `SELECT referrer_address FROM referrals
-     WHERE referee_address = $1 AND status = 'pending'
-     LIMIT 1`,
+    `SELECT parent_address FROM referral_tree WHERE child_address = $1 LIMIT 1`,
     [refereeAddress],
   );
-  return rows.length ? rows[0].referrer_address : null;
+  return rows.length ? rows[0].parent_address : null;
 }
 
+// ── Multi-level payout processing ─────────────────────────────────────────────
+
 /**
- * Process the referral bonus payout when a referee's first job is released.
- * Calculates 2% of the job's escrow amount and records the payout.
- * This is called from the escrow release route — the actual on-chain transfer
- * is handled by the Soroban contract's release_escrow() function.
+ * Walk the referral tree from `refereeAddress` up to MAX_DEPTH levels and
+ * record bonus payouts for each ancestor.
  *
- * @param {string} jobId             UUID of the completed job.
- * @param {string} refereeAddress    The freelancer who just completed the job.
- * @param {string} amountXlm        The full escrow amount in XLM (string).
- * @param {string} [contractTxHash] On-chain tx hash from the release.
- * @returns {Promise<{referrer: string, bonusXlm: string}|null>}
+ * Called from the escrow release route after the on-chain release_escrow()
+ * transaction is confirmed.  The actual token transfers happen on-chain;
+ * this function records the audit trail in the database.
+ *
+ * @param {string} jobId              UUID of the completed job.
+ * @param {string} refereeAddress     The freelancer who just completed the job.
+ * @param {string} amountXlm          The full escrow release amount (string).
+ * @param {string} [contractTxHash]   On-chain tx hash.
+ * @returns {Promise<Array<{recipient, level, bonusXlm}>>}  Payouts recorded.
  */
-async function processReferralPayout(
-  jobId,
-  refereeAddress,
-  amountXlm,
-  contractTxHash,
-) {
+async function processMultiLevelPayout(jobId, refereeAddress, amountXlm, contractTxHash) {
   validatePublicKey(refereeAddress);
 
   // Only pay out on the referee's FIRST completed job
@@ -122,65 +169,84 @@ async function processReferralPayout(
        AND j.id != $2`,
     [refereeAddress, jobId],
   );
-  const previousCompletedJobs = parseInt(prevJobs[0].cnt, 10);
-  if (previousCompletedJobs > 0) {
-    // Not the first job — no bonus
-    return null;
+  if (parseInt(prevJobs[0].cnt, 10) > 0) return [];
+
+  const escrowAmount = parseFloat(amountXlm);
+  if (isNaN(escrowAmount) || escrowAmount <= 0) return [];
+
+  // Walk up the tree
+  const ancestors = [];
+  let cursor = refereeAddress;
+  for (let level = 1; level <= MAX_DEPTH; level++) {
+    const { rows } = await pool.query(
+      "SELECT parent_address FROM referral_tree WHERE child_address = $1 LIMIT 1",
+      [cursor],
+    );
+    if (!rows.length) break;
+    const parentAddr = rows[0].parent_address;
+    const bps = LEVEL_BPS[level - 1];
+    const bonusXlm = ((escrowAmount * bps) / BPS_DENOMINATOR).toFixed(7);
+    ancestors.push({ recipient: parentAddr, level, bonusXlm });
+    cursor = parentAddr;
   }
 
-  // Find the pending referral
-  const { rows: refRows } = await pool.query(
-    `SELECT * FROM referrals
-     WHERE referee_address = $1 AND status = 'pending'
-     LIMIT 1`,
-    [refereeAddress],
-  );
-  if (!refRows.length) return null;
-
-  const referral = refRows[0];
-  const escrowAmount = parseFloat(amountXlm);
-  if (isNaN(escrowAmount) || escrowAmount <= 0) return null;
-
-  // 2% bonus
-  const bonusXlm = ((escrowAmount * REFERRAL_BONUS_BPS) / 10_000).toFixed(7);
+  if (!ancestors.length) return [];
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Mark referral as paid
-    await client.query(
-      `UPDATE referrals
-       SET status = 'paid', payout_amount = $1, job_id = $2, paid_at = NOW()
-       WHERE id = $3`,
-      [bonusXlm, jobId, referral.id],
-    );
+    for (const { recipient, level, bonusXlm } of ancestors) {
+      // Write multi_level_payouts audit row
+      await client.query(
+        `INSERT INTO multi_level_payouts
+           (job_id, freelancer_address, recipient_address, level, amount_xlm, contract_tx_hash)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [jobId, refereeAddress, recipient, level, bonusXlm, contractTxHash || null],
+      );
 
-    // Write audit row
-    await client.query(
-      `INSERT INTO referral_payouts
-         (referral_id, referrer_address, referee_address, job_id, amount_xlm, contract_tx_hash)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        referral.id,
-        referral.referrer_address,
-        refereeAddress,
-        jobId,
-        bonusXlm,
-        contractTxHash || null,
-      ],
-    );
+      // For the direct (level-1) referral, also update the legacy referrals row
+      if (level === 1) {
+        await client.query(
+          `UPDATE referrals
+           SET status = 'paid',
+               payout_amount = $1,
+               job_id = $2,
+               paid_at = NOW()
+           WHERE referrer_address = $3
+             AND referee_address = $4
+             AND status = 'pending'`,
+          [bonusXlm, jobId, recipient, refereeAddress],
+        );
 
-    // Reputation bonus for referrer (+5 points, same as before)
-    await client.query(
-      `UPDATE profiles
-       SET reputation_points = reputation_points + 5, updated_at = NOW()
-       WHERE public_key = $1`,
-      [referral.referrer_address],
-    );
+        // Legacy payout audit row
+        const { rows: refRow } = await client.query(
+          "SELECT id FROM referrals WHERE referrer_address = $1 AND referee_address = $2 LIMIT 1",
+          [recipient, refereeAddress],
+        );
+        if (refRow.length) {
+          await client.query(
+            `INSERT INTO referral_payouts
+               (referral_id, referrer_address, referee_address, job_id, amount_xlm, contract_tx_hash)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT DO NOTHING`,
+            [refRow[0].id, recipient, refereeAddress, jobId, bonusXlm, contractTxHash || null],
+          );
+        }
+      }
+
+      // Reputation bonus for each ancestor (+5 for direct, +2 for deeper)
+      const repBonus = level === 1 ? 5 : 2;
+      await client.query(
+        `UPDATE profiles
+         SET reputation_points = reputation_points + $1, updated_at = NOW()
+         WHERE public_key = $2`,
+        [repBonus, recipient],
+      );
+    }
 
     await client.query("COMMIT");
-    return { referrer: referral.referrer_address, bonusXlm };
+    return ancestors;
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -190,15 +256,25 @@ async function processReferralPayout(
 }
 
 /**
- * Get referral stats and history for a given public key (as referrer).
- *
- * @param {string} publicKey
- * @returns {Promise<Object>}
+ * Back-compat shim: called from the old escrow release path.
+ * Delegates to processMultiLevelPayout and returns the level-1 result.
+ */
+async function processReferralPayout(jobId, refereeAddress, amountXlm, contractTxHash) {
+  const payouts = await processMultiLevelPayout(jobId, refereeAddress, amountXlm, contractTxHash);
+  const direct = payouts.find((p) => p.level === 1);
+  if (!direct) return null;
+  return { referrer: direct.recipient, bonusXlm: direct.bonusXlm };
+}
+
+// ── Queries ───────────────────────────────────────────────────────────────────
+
+/**
+ * Get flat referral stats and history for a given public key (as referrer).
  */
 async function getReferralStats(publicKey) {
   validatePublicKey(publicKey);
 
-  // Summary counts
+  // Summary counts (legacy referrals table)
   const { rows: summary } = await pool.query(
     `SELECT
        COUNT(*)                                          AS total_referrals,
@@ -210,7 +286,16 @@ async function getReferralStats(publicKey) {
     [publicKey],
   );
 
-  // Per-referee detail
+  // Multi-level earnings from multi_level_payouts
+  const { rows: treeEarnings } = await pool.query(
+    `SELECT COALESCE(SUM(amount_xlm), 0) AS tree_total_xlm,
+            COUNT(*) AS tree_payout_count
+     FROM multi_level_payouts
+     WHERE recipient_address = $1`,
+    [publicKey],
+  );
+
+  // Per-referee detail (direct children only)
   const { rows: referees } = await pool.query(
     `SELECT
        r.id,
@@ -229,7 +314,7 @@ async function getReferralStats(publicKey) {
     [publicKey],
   );
 
-  // Payout history
+  // Payout history (legacy)
   const { rows: payouts } = await pool.query(
     `SELECT
        rp.id,
@@ -247,20 +332,22 @@ async function getReferralStats(publicKey) {
   );
 
   const s = summary[0];
+  const te = treeEarnings[0];
   return {
     totalReferrals: parseInt(s.total_referrals, 10),
     paidReferrals: parseInt(s.paid_referrals, 10),
     pendingReferrals: parseInt(s.pending_referrals, 10),
     totalEarnedXlm: parseFloat(s.total_earned_xlm).toFixed(7),
+    treeEarnedXlm: parseFloat(te.tree_total_xlm).toFixed(7),
+    treePayoutCount: parseInt(te.tree_payout_count, 10),
     bonusBps: REFERRAL_BONUS_BPS,
+    levelBps: LEVEL_BPS,
     referees: referees.map((r) => ({
       id: r.id,
       refereeAddress: r.referee_address,
       refereeDisplayName: r.referee_display_name || null,
       status: r.status,
-      payoutAmount: r.payout_amount
-        ? parseFloat(r.payout_amount).toFixed(7)
-        : null,
+      payoutAmount: r.payout_amount ? parseFloat(r.payout_amount).toFixed(7) : null,
       paidAt: r.paid_at || null,
       jobTitle: r.job_title || null,
       createdAt: r.created_at,
@@ -277,10 +364,113 @@ async function getReferralStats(publicKey) {
   };
 }
 
+/**
+ * Get the full referral subtree rooted at `publicKey` for visualization.
+ * Returns a JSON-serialisable tree suitable for D3 / recharts TreeMap.
+ *
+ * Each node:
+ *   { address, displayName, depth, children: [...], earnedXlm }
+ *
+ * Depth-limited to MAX_DEPTH to avoid runaway queries.
+ *
+ * @param {string} publicKey  Root of the subtree (the user viewing their dashboard).
+ * @returns {Promise<Object>}
+ */
+async function getReferralTree(publicKey) {
+  validatePublicKey(publicKey);
+
+  // Fetch the entire subtree using a recursive CTE capped at MAX_DEPTH
+  const { rows } = await pool.query(
+    `WITH RECURSIVE subtree AS (
+       -- Seed: direct children of the root
+       SELECT
+         rt.child_address,
+         rt.parent_address,
+         rt.depth,
+         p.display_name,
+         1 AS rel_level
+       FROM referral_tree rt
+       LEFT JOIN profiles p ON p.public_key = rt.child_address
+       WHERE rt.parent_address = $1
+
+       UNION ALL
+
+       -- Recursive step: children of the children (capped at MAX_DEPTH)
+       SELECT
+         rt2.child_address,
+         rt2.parent_address,
+         rt2.depth,
+         p2.display_name,
+         st.rel_level + 1
+       FROM referral_tree rt2
+       LEFT JOIN profiles p2 ON p2.public_key = rt2.child_address
+       JOIN subtree st ON st.child_address = rt2.parent_address
+       WHERE st.rel_level < $2
+     )
+     SELECT
+       s.child_address,
+       s.parent_address,
+       s.rel_level,
+       s.display_name,
+       COALESCE(SUM(mlp.amount_xlm), 0) AS earned_xlm
+     FROM subtree s
+     LEFT JOIN multi_level_payouts mlp
+       ON mlp.recipient_address = $1
+       AND mlp.freelancer_address = s.child_address
+     GROUP BY s.child_address, s.parent_address, s.rel_level, s.display_name
+     ORDER BY s.rel_level, s.child_address`,
+    [publicKey, MAX_DEPTH],
+  );
+
+  // ── Build the tree structure ───────────────────────────────────────────────
+  const nodeMap = new Map();
+  const root = {
+    address: publicKey,
+    displayName: null,
+    depth: 0,
+    earnedXlm: "0.0000000",
+    children: [],
+  };
+  nodeMap.set(publicKey, root);
+
+  for (const row of rows) {
+    const node = {
+      address: row.child_address,
+      displayName: row.display_name || null,
+      depth: row.rel_level,
+      earnedXlm: parseFloat(row.earned_xlm).toFixed(7),
+      children: [],
+    };
+    nodeMap.set(row.child_address, node);
+  }
+
+  // Attach children to parents
+  for (const row of rows) {
+    const parent = nodeMap.get(row.parent_address);
+    const child = nodeMap.get(row.child_address);
+    if (parent && child) {
+      parent.children.push(child);
+    }
+  }
+
+  // Fill in the root's displayName
+  const { rows: rootProfile } = await pool.query(
+    "SELECT display_name FROM profiles WHERE public_key = $1",
+    [publicKey],
+  );
+  if (rootProfile.length) root.displayName = rootProfile[0].display_name;
+
+  return root;
+}
+
 module.exports = {
   registerReferral,
   getReferrerForReferee,
   processReferralPayout,
+  processMultiLevelPayout,
   getReferralStats,
+  getReferralTree,
   REFERRAL_BONUS_BPS,
+  LEVEL_BPS,
+  MAX_DEPTH,
 };
