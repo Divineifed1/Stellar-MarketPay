@@ -304,9 +304,20 @@ export interface ReferralStats {
   paidReferrals: number;
   pendingReferrals: number;
   totalEarnedXlm: string;
+  treeEarnedXlm?: string;
+  treePayoutCount?: number;
   bonusBps: number;
+  levelBps?: number[];
   referees: ReferralReferee[];
   payouts: ReferralPayout[];
+}
+
+export interface ReferralTreeNode {
+  address: string;
+  displayName: string | null;
+  depth: number;
+  earnedXlm: string;
+  children: ReferralTreeNode[];
 }
 
 export interface TimeEntry {
