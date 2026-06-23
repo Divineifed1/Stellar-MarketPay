@@ -1763,6 +1763,18 @@ export async function registerReferral(
   });
 }
 
+/**
+ * Fetch the full referral tree for visualization.
+ */
+export async function fetchReferralTree(
+  publicKey: string,
+): Promise<import("@/utils/types").ReferralTreeNode> {
+  const { data } = await api.get<{ success: boolean; data: import("@/utils/types").ReferralTreeNode }>(
+    `/api/referrals/${encodeURIComponent(publicKey)}/tree`,
+  );
+  return data.data;
+}
+
 // ─── Saved Searches (Issue #284) ─────────────────────────────────────────────
 
 export interface SavedSearch {

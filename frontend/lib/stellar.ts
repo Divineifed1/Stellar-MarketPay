@@ -15,6 +15,24 @@ import {
 import * as SorobanRpc from "@stellar/stellar-sdk/rpc";
 import { optionalClientEnv, requireClientEnv } from "./env";
 import { getUsdcContractId } from "./config/tokens";
+import { fetchDynamicFeeTiers, pickTierFeeStroops } from "./sorobanFees";
+
+/** Fee tier preference for transaction builders. Defaults to "medium". */
+export type FeeTierPreference = "slow" | "medium" | "fast";
+
+/**
+ * Resolve the fee (in stroops as a string) to use when building a transaction.
+ * Falls back to BASE_FEE if the gas estimator is unavailable.
+ */
+async function resolveFee(tier: FeeTierPreference = "medium"): Promise<string> {
+  try {
+    const estimate = await fetchDynamicFeeTiers();
+    return String(pickTierFeeStroops(estimate, tier));
+  } catch {
+    // Graceful degradation — use the Stellar protocol minimum
+    return BASE_FEE;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -61,6 +79,8 @@ export interface EscrowParams {
   currency?: "XLM" | "USDC";
   /** @deprecated Use budget */
   budgetXlm?: number;
+  /** Fee tier preference for gas estimation (default: "medium") */
+  feeTier?: FeeTierPreference;
 }
 
 export interface EscrowResult {
@@ -114,7 +134,7 @@ async function getFreighter() {
 export async function buildCreateEscrowTx(
   params: EscrowParams,
 ): Promise<string> {
-  const { clientPublicKey, jobId } = params;
+  const { clientPublicKey, jobId, feeTier } = params;
   const budgetXlm = params.budget ?? params.budgetXlm ?? 0;
 
   if (!CONTRACT_ID) {
@@ -127,6 +147,7 @@ export async function buildCreateEscrowTx(
   const account = await sorobanServer.getAccount(clientPublicKey);
 
   const amountStroops = BigInt(Math.round(budgetXlm * 10_000_000));
+  const fee = await resolveFee(feeTier);
 
   const contract = new Contract(CONTRACT_ID);
   const callArgs = [
@@ -136,7 +157,7 @@ export async function buildCreateEscrowTx(
   ];
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call("create_escrow", ...callArgs))
@@ -252,6 +273,8 @@ export interface MessageTxParams {
   senderPublicKey: string;
   recipientPublicKey: string;
   ipfsCid: string;
+  /** Fee tier preference for gas estimation (default: "medium") */
+  feeTier?: FeeTierPreference;
 }
 
 export async function buildPublishMessageTx(
@@ -263,8 +286,9 @@ export async function buildPublishMessageTx(
     );
   }
 
-  const { jobId, senderPublicKey, recipientPublicKey, ipfsCid } = params;
+  const { jobId, senderPublicKey, recipientPublicKey, ipfsCid, feeTier } = params;
   const account = await sorobanServer.getAccount(senderPublicKey);
+  const fee = await resolveFee(feeTier);
 
   const contract = new Contract(CONTRACT_ID);
   const callArgs = [
@@ -275,7 +299,7 @@ export async function buildPublishMessageTx(
   ];
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call("publish_message", ...callArgs))
@@ -375,10 +399,12 @@ export interface BoostParams {
   jobId: string;
   amountXlm: number;
   treasuryAddress: string;
+  /** Fee tier preference for gas estimation (default: "medium") */
+  feeTier?: FeeTierPreference;
 }
 
 export async function buildBoostJobTx(params: BoostParams): Promise<string> {
-  const { clientPublicKey, jobId, amountXlm, treasuryAddress } = params;
+  const { clientPublicKey, jobId, amountXlm, treasuryAddress, feeTier } = params;
 
   if (!CONTRACT_ID) {
     throw new Error("NEXT_PUBLIC_CONTRACT_ID is not set.");
@@ -387,6 +413,7 @@ export async function buildBoostJobTx(params: BoostParams): Promise<string> {
   const server = sorobanServer;
   const account = await server.getAccount(clientPublicKey);
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
+  const fee = await resolveFee(feeTier);
 
   const contract = new Contract(CONTRACT_ID);
   const callArgs = [
@@ -397,7 +424,7 @@ export async function buildBoostJobTx(params: BoostParams): Promise<string> {
   ];
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call("boost_job", ...callArgs))
@@ -464,7 +491,8 @@ export async function signAndSubmitSorobanTx(xdrString: string): Promise<string>
 export async function buildReleaseEscrowTransaction(
   contractId: string,
   jobId: string,
-  clientPublicKey: string
+  clientPublicKey: string,
+  feeTier: FeeTierPreference = "medium"
 ) {
   if (USE_CONTRACT_MOCK) {
     return { toXDR: () => "mock-prepared-xdr" };
@@ -472,9 +500,10 @@ export async function buildReleaseEscrowTransaction(
   const server = sorobanServer;
   const account = await server.getAccount(clientPublicKey);
   const contract = new Contract(contractId);
+  const fee = await resolveFee(feeTier);
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(
@@ -498,14 +527,16 @@ export async function buildPartialReleaseTransaction(
   contractId: string,
   jobId: string,
   clientPublicKey: string,
-  milestoneIndex: number
+  milestoneIndex: number,
+  feeTier: FeeTierPreference = "medium"
 ) {
   const server = sorobanServer;
   const account = await server.getAccount(clientPublicKey);
   const contract = new Contract(contractId);
+  const fee = await resolveFee(feeTier);
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(
@@ -596,13 +627,16 @@ export interface BuildPaymentParams {
   amount: string;
   memo?: string;
   asset?: string;
+  /** Fee tier preference for gas estimation (default: "medium") */
+  feeTier?: FeeTierPreference;
 }
 
 export async function buildPaymentTransaction(params: BuildPaymentParams) {
-  const { fromPublicKey, toPublicKey, amount, memo, asset } = params;
+  const { fromPublicKey, toPublicKey, amount, memo, asset, feeTier } = params;
   const account = await sorobanServer.getAccount(fromPublicKey);
+  const fee = await resolveFee(feeTier);
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(

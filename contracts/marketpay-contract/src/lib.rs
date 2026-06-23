@@ -31,6 +31,9 @@ use soroban_sdk::{
     String, Vec,
 };
 
+pub mod referral;
+use referral::{distribute_tree_rewards, get_children, get_depth, get_parent, register_referral};
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 /// Default timeout: 7 days in seconds.
@@ -231,6 +234,12 @@ pub enum DataKey {
     Version,
     /// Stores list of IPFS CIDs for messages in a job thread
     MessageCid(String),
+    /// Referral tree: child → parent address
+    ReferralParent(Address),
+    /// Referral tree: parent → Vec<Address> of direct children
+    ReferralChildren(Address),
+    /// Referral tree: user → depth in the tree (u32)
+    ReferralDepth(Address),
 }
 
 /// Reveal phase is open for roughly 24 hours after client closes bidding.
@@ -598,35 +607,46 @@ impl MarketPayContract {
         if release_amount > 0 {
             let token_client = token::Client::new(&env, &escrow.token);
 
-            // ── Referral bonus: 2% of release_amount goes to referrer ──────────
-            // The remaining 98% goes to the freelancer.
-            let (freelancer_amount, referral_amount) = match &escrow.referrer {
-                Some(referrer_addr) => {
-                    // 2% in basis points: amount * 200 / 10_000
-                    let bonus = release_amount
-                        .checked_mul(200)
-                        .expect("Arithmetic overflow")
-                        .checked_div(10_000)
-                        .expect("Arithmetic overflow");
-                    let to_freelancer = release_amount
-                        .checked_sub(bonus)
-                        .expect("Arithmetic overflow");
-                    // Transfer bonus to referrer
-                    if bonus > 0 {
-                        token_client.transfer(
-                            &env.current_contract_address(),
-                            referrer_addr,
-                            &bonus,
-                        );
-                        env.events().publish(
-                            (symbol_short!("ref_bon"), referrer_addr.clone()),
-                            (job_id.clone(), bonus),
-                        );
-                    }
-                    (to_freelancer, bonus)
+            // ── Multi-level referral tree bonus ───────────────────────────────
+            // Walk up the referral tree from the freelancer and distribute bonuses
+            // to up to MAX_REFERRAL_DEPTH ancestors (levels 1–3).
+            // Falls back to the legacy single-level referrer stored on the escrow
+            // if no tree entry exists for the freelancer.
+            let total_bonus = if get_parent(&env, &escrow.freelancer).is_some() {
+                // Tree registration found — use multi-level distribution
+                distribute_tree_rewards(
+                    &env,
+                    &token_client,
+                    &escrow.freelancer,
+                    release_amount,
+                    &job_id,
+                )
+            } else if let Some(ref referrer_addr) = escrow.referrer {
+                // Legacy single-level referral stored on the escrow struct
+                let bonus = release_amount
+                    .checked_mul(200)
+                    .expect("Arithmetic overflow")
+                    .checked_div(10_000)
+                    .expect("Arithmetic overflow");
+                if bonus > 0 {
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        referrer_addr,
+                        &bonus,
+                    );
+                    env.events().publish(
+                        (symbol_short!("ref_bon"), referrer_addr.clone()),
+                        (job_id.clone(), bonus),
+                    );
                 }
-                None => (release_amount, 0i128),
+                bonus
+            } else {
+                0i128
             };
+
+            let freelancer_amount = release_amount
+                .checked_sub(total_bonus)
+                .expect("Arithmetic overflow");
 
             // Transfer remaining funds to freelancer
             if freelancer_amount > 0 {
@@ -639,7 +659,7 @@ impl MarketPayContract {
 
             env.events().publish(
                 (symbol_short!("escrow_rl"), job_id.clone()),
-                (escrow.client.clone(), escrow.freelancer.clone(), freelancer_amount, referral_amount),
+                (escrow.client.clone(), escrow.freelancer.clone(), freelancer_amount, total_bonus),
             );
         } else {
             env.events().publish(
@@ -988,6 +1008,46 @@ impl MarketPayContract {
         env.storage().instance()
             .get(&DataKey::MessageCid(job_id))
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+    }
+
+    // ─── Referral Tree ───────────────────────────────────────────────────────
+
+    /// Register a parent→child referral relationship on-chain.
+    ///
+    /// Called when a new user signs up via a referral link.
+    /// Requires the *child* to sign (prevents Sybil fake-registration).
+    ///
+    /// # Panics
+    /// - `child == parent` (self-referral)
+    /// - `child` already has a registered parent
+    /// - Registering would create a cycle in the tree
+    pub fn register_referral_tree(env: Env, parent: Address, child: Address) {
+        register_referral(&env, parent, child);
+    }
+
+    /// Get the direct parent (referrer) of an address.
+    pub fn get_referral_parent(env: Env, child: Address) -> Option<Address> {
+        get_parent(&env, &child)
+    }
+
+    /// Get all direct children (invitees) of an address.
+    pub fn get_referral_children(env: Env, parent: Address) -> soroban_sdk::Vec<Address> {
+        get_children(&env, &parent)
+    }
+
+    /// Get the depth of a user in the referral tree (0 = root, 1 = direct child, …).
+    pub fn get_referral_depth(env: Env, user: Address) -> u32 {
+        get_depth(&env, &user)
+    }
+
+    /// Calculate (but do NOT distribute) multi-level rewards for a given
+    /// freelancer and release amount.  Useful for UI preview before release.
+    pub fn preview_referral_rewards(
+        env: Env,
+        freelancer: Address,
+        release_amount: i128,
+    ) -> soroban_sdk::Vec<referral::ReferralReward> {
+        referral::calculate_tree_rewards(&env, &freelancer, release_amount)
     }
 
     // ─── Governance (DAO) ───────────────────────────────────────────────────
