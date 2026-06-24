@@ -154,6 +154,7 @@ router.get("/freelancer/:publicKey", generalApplicationRateLimiter, async (req, 
 router.post("/", applicationRateLimiter, async (req, res, next) => {
   try {
     const app = await submitApplication(req.body);
+    const job = await getJob(app.jobId);
     let fraudAlert = null;
 
     try {
@@ -175,9 +176,6 @@ router.post("/", applicationRateLimiter, async (req, res, next) => {
     // Emit WebSocket event for real-time bid updates
     const broadcastRealtime = req.app.locals.broadcastRealtime;
     if (broadcastRealtime) {
-      // Get job details for the broadcast
-      const job = await getJob(app.jobId);
-      
       broadcastRealtime(`job:${app.jobId}:bids`, {
         type: 'new_bid',
         application: {

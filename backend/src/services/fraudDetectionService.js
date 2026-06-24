@@ -344,6 +344,7 @@ async function analyzeBidEvent(input = {}) {
   state.jobWindows.set(jobId, jobWindow);
   state.freelancerWindows.set(freelancerAddress, freelancerWindow);
 
+  const updatedJobStats = calculateStats(jobWindow.map((entry) => entry.amount));
   const flagged = rules.length > 0;
   const riskScore = flagged ? Math.max(...rules.map((rule) => rule.riskScore)) : 0;
   const context = {
@@ -357,11 +358,11 @@ async function analyzeBidEvent(input = {}) {
     freelancerRecentBidCount,
     jobRecentBidCount,
     jobStats: {
-      count: jobStats.count,
-      mean: jobStats.mean == null ? null : Number(jobStats.mean.toFixed(7)),
-      min: jobStats.min == null ? null : formatAmount(jobStats.min),
-      max: jobStats.max == null ? null : formatAmount(jobStats.max),
-      stdDev: jobStats.stdDev == null ? null : Number(jobStats.stdDev.toFixed(7)),
+      count: updatedJobStats.count,
+      mean: updatedJobStats.mean == null ? null : Number(updatedJobStats.mean.toFixed(7)),
+      min: updatedJobStats.min == null ? null : formatAmount(updatedJobStats.min),
+      max: updatedJobStats.max == null ? null : formatAmount(updatedJobStats.max),
+      stdDev: updatedJobStats.stdDev == null ? null : Number(updatedJobStats.stdDev.toFixed(7)),
     },
   };
 
@@ -390,11 +391,11 @@ async function analyzeBidEvent(input = {}) {
     alert,
     job: {
       recentBidCount: jobRecentBidCount,
-      count: jobStats.count,
-      mean: jobStats.mean == null ? null : Number(jobStats.mean.toFixed(7)),
-      min: jobStats.min == null ? null : formatAmount(jobStats.min),
-      max: jobStats.max == null ? null : formatAmount(jobStats.max),
-      stdDev: jobStats.stdDev == null ? null : Number(jobStats.stdDev.toFixed(7)),
+      count: updatedJobStats.count,
+      mean: updatedJobStats.mean == null ? null : Number(updatedJobStats.mean.toFixed(7)),
+      min: updatedJobStats.min == null ? null : formatAmount(updatedJobStats.min),
+      max: updatedJobStats.max == null ? null : formatAmount(updatedJobStats.max),
+      stdDev: updatedJobStats.stdDev == null ? null : Number(updatedJobStats.stdDev.toFixed(7)),
     },
     freelancer: {
       recentBidCount: freelancerRecentBidCount,
