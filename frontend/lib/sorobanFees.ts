@@ -1,13 +1,19 @@
 /**
  * lib/sorobanFees.ts
- * Fee estimation for Soroban contract calls (Issue #222).
+ * Fee estimation for Soroban contract calls.
  *
- * Uses `simulateTransaction` to compute the minimum fee a contract call
- * will need, so the user can review and confirm before signing.
+ * Two layers:
+ *   1. estimateSorobanFee()   — simulate a specific transaction (per-call precision)
+ *   2. fetchDynamicFeesTiers() — pull Slow/Medium/Fast tiers from the backend
+ *      gas estimator, which is backed by live Horizon fee_stats data.
+ *
+ * Use layer 2 to pre-populate the fee picker UI before the user has built
+ * a transaction, then layer 1 after simulation to confirm the exact fee.
  */
 
 import { Transaction, SorobanRpc } from "@stellar/stellar-sdk";
 import { sorobanServer, NETWORK_PASSPHRASE } from "./stellar";
+import { optionalClientEnv } from "./env";
 
 export interface FeeEstimate {
   /** Sum of base fee + Soroban resource fee, in stroops. */
@@ -105,3 +111,78 @@ export function describeContractCall(fnName: string): string {
 }
 
 export { stroopsToXlm, NETWORK_PASSPHRASE };
+
+// ─── Dynamic fee tiers (from backend gas estimator) ──────────────────────────
+
+/** A single fee tier returned by the backend gas estimator. */
+export interface FeeTier {
+  /** Total fee in stroops (as string — BigInt not serialisable over JSON). */
+  feeStroops: string;
+  /** Human-readable XLM amount, e.g. "0.0001". */
+  feeXlm: string;
+  /** "Slow" | "Medium" | "Fast" */
+  label: "Slow" | "Medium" | "Fast";
+  /** One-line user-facing description of expected wait time. */
+  description: string;
+  /** Expected ledgers until inclusion. */
+  estimatedWaitLedgers: number;
+}
+
+export interface DynamicFeeEstimate {
+  slow: FeeTier;
+  medium: FeeTier;
+  fast: FeeTier;
+  /** True when fees are spiking above recent rolling average. */
+  spikeDetected: boolean;
+  /** ISO timestamp of the Horizon fetch (may be older if served from cache). */
+  fetchedAt: string;
+  /** True when the backend served this from its 15-second cache. */
+  cached: boolean;
+}
+
+const API_BASE = optionalClientEnv("NEXT_PUBLIC_API_URL", "http://localhost:4000");
+
+/**
+ * Fetch Slow / Medium / Fast fee tier estimates from the backend gas estimator.
+ *
+ * The backend caches results for 15 seconds so this is safe to call on every
+ * page render — it won't hammer Horizon.
+ *
+ * @param forceRefresh  When true, tells the backend to bypass its cache.
+ */
+export async function fetchDynamicFeeTiers(
+  forceRefresh = false,
+): Promise<DynamicFeeEstimate> {
+  const path = forceRefresh ? "/api/gas-estimate/refresh" : "/api/gas-estimate";
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    // Allow browsers to use their HTTP cache for the 15-second window too.
+    cache: forceRefresh ? "no-store" : "default",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gas estimator request failed: ${res.status} ${res.statusText}`);
+  }
+
+  const json = await res.json() as { success: boolean; data: DynamicFeeEstimate };
+  if (!json.success || !json.data) {
+    throw new Error("Gas estimator returned an unexpected response shape");
+  }
+
+  return json.data;
+}
+
+/**
+ * Pick the recommended tier fee in stroops for a given preference.
+ * Useful when building a transaction and you want a single fee value.
+ *
+ * @param estimate  Result from fetchDynamicFeeTiers()
+ * @param tier      User preference — defaults to "medium"
+ * @returns fee in stroops as a number (safe for Stellar SDK's `fee` field)
+ */
+export function pickTierFeeStroops(
+  estimate: DynamicFeeEstimate,
+  tier: "slow" | "medium" | "fast" = "medium",
+): number {
+  return Number(estimate[tier].feeStroops);
+}
